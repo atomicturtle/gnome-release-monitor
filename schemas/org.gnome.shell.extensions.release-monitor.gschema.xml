@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="release-monitor">
+  <schema id="org.gnome.shell.extensions.release-monitor" path="/org/gnome/shell/extensions/release-monitor/">
+    <key name="refresh-interval" type="i">
+      <default>1800</default>
+      <summary>Refresh interval in seconds</summary>
+      <description>How often to check for new releases (in seconds). Default is 1800 (30 minutes).</description>
+      <range min="60" max="86400"/>
+    </key>
+  </schema>
+</schemalist>
+
