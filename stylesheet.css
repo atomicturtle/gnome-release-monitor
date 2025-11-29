@@ -1,0 +1,12 @@
+.release-monitor-indicator {
+    padding: 0 4px;
+}
+
+.release-monitor-indicator .system-status-icon {
+    icon-size: 1.2em;
+}
+
+.release-monitor-indicator .system-status-icon.attention {
+    color: #f39c12;
+}
+
