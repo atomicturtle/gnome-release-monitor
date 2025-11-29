@@ -19,7 +19,7 @@ const ConfigManager = class {
     constructor() {
         this.configDir = GLib.get_user_config_dir();
         this.configFile = Gio.File.new_for_path(
-            GLib.build_filenamev([this.configDir, 'gnome-release-monitor', 'projects.json'])
+            GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json'])
         );
         this.projects = [];
         this._ensureConfigDir();
@@ -416,7 +416,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         script += '    window = new Adw.ApplicationWindow({\n';
         script += '        application: app\n';
         script += '    });\n';
-        script += '    window.set_title(\'GitHub Release Monitor - Project Report (v' + version + ')\');\n';
+        script += '    window.set_title(\'Release Monitor - Project Report (v' + version + ')\');\n';
         script += '    window.set_default_size(900, ' + windowHeight + ');\n';
         script += '    window.set_resizable(true);\n';
         script += '    window.set_deletable(true);\n';
@@ -427,7 +427,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         script += '    // Add a header bar to show title and window controls\n';
         script += '    const headerBar = new Adw.HeaderBar();\n';
         script += '    headerBar.set_title_widget(new Adw.WindowTitle({\n';
-        script += '        title: \'GitHub Release Monitor - Project Report (v' + version + ')\'\n';
+        script += '        title: \'Release Monitor - Project Report (v' + version + ')\'\n';
         script += '    }));\n';
         script += '    headerBar.set_show_end_title_buttons(true);\n';
         script += '    headerBar.set_show_start_title_buttons(true);\n';
@@ -486,7 +486,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         script += '    });\n';
         script += '    \n';
         script += '    const titleLabel = new Gtk.Label({\n';
-        script += '        label: \'<b>GitHub Release Monitor - Project Report</b>\',\n';
+        script += '        label: \'<b>Release Monitor - Project Report</b>\',\n';
         script += '        use_markup: true,\n';
         script += '        halign: Gtk.Align.START\n';
         script += '    });\n';
@@ -768,7 +768,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         // Write script to temp file and execute it
         try {
             console.log('_openReportWindow: Creating temp file...');
-            const [fd, filePath] = GLib.file_open_tmp('gnome-release-monitor-XXXXXX.gjs');
+            const [fd, filePath] = GLib.file_open_tmp('release-monitor-XXXXXX.gjs');
             console.log(`_openReportWindow: Temp file created: ${filePath}`);
             
             // Close the file descriptor - we'll use Gio.File to write
@@ -856,7 +856,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             // Last resort: show notification
             Main.notify(
                 'Add GitHub Project',
-                'Please open Extensions app and click the settings icon for GitHub Release Monitor'
+                'Please open Extensions app and click the settings icon for Release Monitor'
             );
         }
     }
@@ -869,7 +869,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
     
     updateIcon(hasNewReleases) {
         if (hasNewReleases) {
-            this.icon.icon_name = 'software-update-available-symbolic';
+            this.icon.icon_name = 'software-update-urgent-symbolic';
             this.icon.style_class = 'system-status-icon attention';
         } else {
             this.icon.icon_name = 'software-update-available-symbolic';

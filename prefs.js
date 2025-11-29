@@ -16,7 +16,7 @@ const ConfigManager = class {
     constructor() {
         this.configDir = GLib.get_user_config_dir();
         this.configFile = Gio.File.new_for_path(
-            GLib.build_filenamev([this.configDir, 'gnome-release-monitor', 'projects.json'])
+            GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json'])
         );
         this.projects = [];
         this._ensureConfigDir();

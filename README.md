@@ -1,4 +1,4 @@
-# GitHub Release Monitor
+# Release Monitor
 
 A GNOME Shell extension that monitors GitHub projects for new releases and notifies you when they become available.
 
@@ -21,14 +21,14 @@ cd gnome-release-monitor
 2. Copy the extension to your GNOME Shell extensions directory:
 ```bash
 mkdir -p ~/.local/share/gnome-shell/extensions
-cp -r . ~/.local/share/gnome-shell/extensions/github-release-monitor@gnome.org
+cp -r . ~/.local/share/gnome-shell/extensions/release-monitor@atomicrocketturtle.com
 ```
 
 3. Restart GNOME Shell (press Alt+F2, type `r` and press Enter) or log out and log back in.
 
 4. Enable the extension using GNOME Extensions app or:
 ```bash
-gnome-extensions enable github-release-monitor@gnome.org
+gnome-extensions enable release-monitor@atomicrocketturtle.com
 ```
 
 ## Usage
@@ -49,7 +49,7 @@ gnome-extensions enable github-release-monitor@gnome.org
 
 The list of monitored projects is stored in:
 ```
-~/.config/gnome-release-monitor/projects.json
+~/.config/release-monitor/projects.json
 ```
 
 You can manually edit this file if needed, but it's recommended to use the preferences window.
