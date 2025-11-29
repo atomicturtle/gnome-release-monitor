@@ -57,16 +57,27 @@ const ConfigManager = class {
         }
     }
 
-    addProject(owner, repo) {
+    addProject(owner, repo, versionFilter = null) {
         const project = {
             owner: owner,
             repo: repo,
+            versionFilter: versionFilter || null,
             lastRelease: null,
             lastChecked: null
         };
         this.projects.push(project);
         this.save();
         return project;
+    }
+    
+    updateProjectVersionFilter(owner, repo, versionFilter) {
+        const project = this.projects.find(
+            p => p.owner === owner && p.repo === repo
+        );
+        if (project) {
+            project.versionFilter = versionFilter || null;
+            this.save();
+        }
     }
 
     removeProject(owner, repo) {
@@ -101,8 +112,105 @@ const GitHubAPI = class {
         this.baseUrl = 'https://api.github.com';
     }
 
-    async getLatestRelease(owner, repo) {
-        const url = `${this.baseUrl}/repos/${owner}/${repo}/releases/latest`;
+    // Helper function to match version pattern (e.g., "1.0.x" or "1.0.*" matches "1.0.1", "1.0.2", etc.)
+    _matchesVersionPattern(tagName, pattern) {
+        if (!pattern || !pattern.trim()) {
+            return true; // No filter means match all
+        }
+        
+        // Normalize the tag name: remove common prefixes and convert to lowercase
+        // Handles: "v1.5.3", "clamav-1.5.3", "ClamAV-1.5.3", "1.5.3", etc.
+        let normalizedTag = tagName.toLowerCase();
+        // Remove common prefixes
+        normalizedTag = normalizedTag.replace(/^(v|clamav-|clamav|release-|version-)/i, '');
+        // Remove any leading non-numeric characters
+        normalizedTag = normalizedTag.replace(/^[^0-9]+/, '');
+        
+        // Normalize pattern: replace 'x' or '*' with empty, trim whitespace
+        let normalizedPattern = pattern.trim().toLowerCase().replace(/[x*]/g, '');
+        // Remove common prefixes from pattern too
+        normalizedPattern = normalizedPattern.replace(/^(v|clamav-|clamav|release-|version-)/i, '');
+        normalizedPattern = normalizedPattern.replace(/^[^0-9]+/, '');
+        
+        // Build a regex pattern: "1.4.*" -> "1\.4\." to match "1.4.3", "1.4.10", etc.
+        // Escape dots in the pattern
+        let escapedPattern = normalizedPattern.replace(/\./g, '\\.');
+        // If pattern doesn't end with a dot, add one (to match "1.4" -> "1.4.")
+        if (escapedPattern && !escapedPattern.endsWith('\\.')) {
+            escapedPattern += '\\.';
+        }
+        // Create regex that matches the pattern followed by at least one digit
+        const regex = new RegExp('^' + escapedPattern + '\\d');
+        
+        // Test if the normalized tag matches
+        const matches = regex.test(normalizedTag);
+        
+        console.log(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
+        
+        return matches;
+    }
+
+    async getLatestRelease(owner, repo, versionFilter = null) {
+        // If no version filter, use the simple /latest endpoint
+        if (!versionFilter || !versionFilter.trim()) {
+            const url = `${this.baseUrl}/repos/${owner}/${repo}/releases/latest`;
+            const message = Soup.Message.new('GET', url);
+            
+            message.request_headers.append('Accept', 'application/vnd.github.v3+json');
+            message.request_headers.append('User-Agent', 'GNOME-Release-Monitor');
+
+            return new Promise((resolve, reject) => {
+                this.session.send_and_read_async(
+                    message,
+                    GLib.PRIORITY_DEFAULT,
+                    null,
+                    (session, result) => {
+                        try {
+                            const bytes = session.send_and_read_finish(result);
+                            const status = message.get_status();
+                            
+                            console.log(`getLatestRelease: ${url} -> status ${status}`);
+                            
+                            if (status === 200) {
+                                try {
+                                    const decoder = new TextDecoder('utf-8');
+                                    const data = bytes.get_data();
+                                    if (!data) {
+                                        reject(new Error('Empty response body'));
+                                        return;
+                                    }
+                                    const response = decoder.decode(data);
+                                    const release = JSON.parse(response);
+                                    resolve({
+                                        tag_name: release.tag_name,
+                                        name: release.name || release.tag_name,
+                                        published_at: release.published_at,
+                                        html_url: release.html_url,
+                                        body: release.body
+                                    });
+                                } catch (e) {
+                                    reject(new Error(`Failed to parse response: ${e.message}`));
+                                }
+                            } else if (status === 404) {
+                                resolve(null); // No releases found
+                            } else {
+                                reject(new Error(`GitHub API error: ${status}`));
+                            }
+                        } catch (e) {
+                            reject(new Error(`Request failed: ${e.message}`));
+                        }
+                    }
+                );
+            });
+        }
+        
+        // With version filter, fetch all releases and filter
+        return this.getLatestReleaseWithFilter(owner, repo, versionFilter);
+    }
+    
+    async getLatestReleaseWithFilter(owner, repo, versionFilter) {
+        // Fetch releases (paginated, but we'll limit to first page for performance)
+        const url = `${this.baseUrl}/repos/${owner}/${repo}/releases?per_page=100`;
         const message = Soup.Message.new('GET', url);
         
         message.request_headers.append('Accept', 'application/vnd.github.v3+json');
@@ -118,8 +226,6 @@ const GitHubAPI = class {
                         const bytes = session.send_and_read_finish(result);
                         const status = message.get_status();
                         
-                        console.log(`getLatestRelease: ${url} -> status ${status}`);
-                        
                         if (status === 200) {
                             try {
                                 const decoder = new TextDecoder('utf-8');
@@ -129,7 +235,27 @@ const GitHubAPI = class {
                                     return;
                                 }
                                 const response = decoder.decode(data);
-                                const release = JSON.parse(response);
+                                const releases = JSON.parse(response);
+                                
+                                console.log(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
+                                if (releases.length > 0) {
+                                    console.log(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
+                                }
+                                
+                                // Filter releases by version pattern
+                                const matchingReleases = releases.filter(release => {
+                                    return this._matchesVersionPattern(release.tag_name, versionFilter);
+                                });
+                                
+                                console.log(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
+                                
+                                if (matchingReleases.length === 0) {
+                                    resolve(null); // No matching releases found
+                                    return;
+                                }
+                                
+                                // Return the first (latest) matching release
+                                const release = matchingReleases[0];
                                 resolve({
                                     tag_name: release.tag_name,
                                     name: release.name || release.tag_name,
@@ -234,6 +360,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         // Store references for updates
         group._configManager = configManager;
         group._githubAPI = githubAPI;
+        group._window = window;
         
         // Load projects
         this._loadProjects(group);
@@ -277,7 +404,20 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         if (project.lastRelease) {
             subtitle = `Latest: ${project.lastRelease.name} (${project.lastRelease.tag_name})`;
         }
+        if (project.versionFilter) {
+            subtitle += ` [Filter: ${project.versionFilter}]`;
+        }
         row.set_subtitle(subtitle);
+        
+        // Version filter button
+        const filterButton = new Gtk.Button({
+            label: project.versionFilter || 'Set Filter',
+            tooltip_text: 'Set version filter (e.g., "1.0.x")',
+            valign: Gtk.Align.CENTER
+        });
+        filterButton.connect('clicked', () => {
+            this._showVersionFilterDialog(group._window, group._configManager, project, group);
+        });
         
         // Remove button
         const removeButton = new Gtk.Button({
@@ -289,14 +429,70 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
             group._configManager.removeProject(project.owner, project.repo);
             this._loadProjects(group);
         });
-        row.add_suffix(removeButton);
-        row.set_activatable_widget(removeButton);
+        
+        // Create a box for buttons
+        const buttonBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 5
+        });
+        buttonBox.append(filterButton);
+        buttonBox.append(removeButton);
+        
+        row.add_suffix(buttonBox);
+        row.set_activatable_widget(buttonBox);
         
         group.add(row);
         if (!group._projectRows) {
             group._projectRows = [];
         }
         group._projectRows.push(row);
+    }
+    
+    _showVersionFilterDialog(window, configManager, project, group) {
+        const dialog = new Gtk.Dialog({
+            title: 'Set Version Filter',
+            modal: true,
+            transient_for: window
+        });
+        
+        const contentArea = dialog.get_content_area();
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 10,
+            margin_start: 10,
+            margin_end: 10,
+            margin_top: 10,
+            margin_bottom: 10
+        });
+        
+        const infoLabel = new Gtk.Label({
+            label: `Filter releases for ${project.owner}/${project.repo}\n\nExamples:\n• "1.0.x" or "1.0.*" - matches 1.0.1, 1.0.2, etc.\n• "1.5.x" - matches 1.5.1, 1.5.2, etc.\n• Leave empty to monitor all releases`,
+            halign: Gtk.Align.START,
+            wrap: true
+        });
+        box.append(infoLabel);
+        
+        const versionFilterEntry = new Gtk.Entry({
+            placeholder_text: 'e.g., 1.0.x',
+            text: project.versionFilter || ''
+        });
+        box.append(versionFilterEntry);
+        
+        contentArea.append(box);
+        
+        dialog.add_button('Cancel', Gtk.ResponseType.CANCEL);
+        dialog.add_button('Save', Gtk.ResponseType.OK);
+        
+        dialog.connect('response', (dialog, response) => {
+            if (response === Gtk.ResponseType.OK) {
+                const versionFilter = versionFilterEntry.get_text().trim() || null;
+                configManager.updateProjectVersionFilter(project.owner, project.repo, versionFilter);
+                this._loadProjects(group);
+            }
+            dialog.destroy();
+        });
+        
+        dialog.present();
     }
     
     _showAddDialog(window, configManager, githubAPI, group) {
@@ -334,6 +530,17 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         const repoEntry = new Gtk.Entry();
         box.append(repoEntry);
         
+        const versionFilterLabel = new Gtk.Label({
+            label: 'Version Filter (optional, e.g., "1.0.x" or "1.5.*"):',
+            halign: Gtk.Align.START
+        });
+        box.append(versionFilterLabel);
+        
+        const versionFilterEntry = new Gtk.Entry({
+            placeholder_text: 'Leave empty for all releases'
+        });
+        box.append(versionFilterEntry);
+        
         contentArea.append(box);
         
         dialog.add_button('Cancel', Gtk.ResponseType.CANCEL);
@@ -343,6 +550,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
             if (response === Gtk.ResponseType.OK) {
                 let owner = ownerEntry.get_text().trim();
                 let repo = repoEntry.get_text().trim();
+                let versionFilter = versionFilterEntry.get_text().trim() || null;
                 
                 // Helper function to parse GitHub URL
                 const parseGitHubUrl = (urlString) => {
@@ -405,13 +613,13 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                         const exists = await githubAPI.checkRepository(owner, repo);
                         console.log(`Repository check result: ${exists}`);
                         if (exists) {
-                            configManager.addProject(owner, repo);
+                            configManager.addProject(owner, repo, versionFilter);
                             this._loadProjects(group);
                             
                             // Check for release immediately
                             try {
-                                console.log(`Fetching latest release for: ${owner}/${repo}`);
-                                const release = await githubAPI.getLatestRelease(owner, repo);
+                                console.log(`Fetching latest release for: ${owner}/${repo}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                                const release = await githubAPI.getLatestRelease(owner, repo, versionFilter);
                                 if (release) {
                                     console.log(`Found release: ${release.tag_name}`);
                                     configManager.updateProjectRelease(owner, repo, release);
