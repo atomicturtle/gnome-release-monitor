@@ -11,26 +11,51 @@ Adw.init();
 
 // Read projects and version from command line arguments
 // Expected: report-window.js <projects-json-file> <version>
+// If projects-json-file is "config", read from the actual config file location
 const args = ARGV;
 if (args.length < 2) {
     console.error('Usage: report-window.js <projects-json-file> <version>');
     imports.system.exit(1);
 }
 
-const projectsFile = Gio.File.new_for_path(args[0]);
 const version = args[1] || '1';
+
+// Determine the projects file - if "config" is passed, use the actual config file
+let projectsFile;
+if (args[0] === 'config') {
+    // Read from the actual config file location
+    const configDir = GLib.get_user_config_dir();
+    const configPath = GLib.build_filenamev([configDir, 'release-monitor', 'projects.json']);
+    projectsFile = Gio.File.new_for_path(configPath);
+    console.log(`Using config file: ${configPath}`);
+} else {
+    // Use the temporary file passed as argument (for backward compatibility)
+    projectsFile = Gio.File.new_for_path(args[0]);
+    console.log(`Using temporary file: ${args[0]}`);
+}
 
 // Read projects from JSON file
 let projects = [];
-try {
-    const [success, contents] = projectsFile.load_contents(null);
-    if (success) {
-        const decoder = new TextDecoder('utf-8');
-        const jsonData = decoder.decode(contents);
-        projects = JSON.parse(jsonData);
+
+const loadProjects = () => {
+    try {
+        const [success, contents] = projectsFile.load_contents(null);
+        if (success) {
+            const decoder = new TextDecoder('utf-8');
+            const jsonData = decoder.decode(contents);
+            projects = JSON.parse(jsonData);
+            console.log(`Loaded ${projects.length} projects from file`);
+            return true;
+        }
+    } catch (e) {
+        console.error(`Error reading projects file: ${e.message}`);
+        return false;
     }
-} catch (e) {
-    console.error(`Error reading projects file: ${e.message}`);
+    return false;
+};
+
+// Initial load
+if (!loadProjects()) {
     imports.system.exit(1);
 }
 
@@ -156,6 +181,9 @@ app.connect('startup', () => {
         // Sort state
         let sortColumn = null;
         let sortAscending = true;
+        
+        // Store reference to tableBox for refresh
+        let tableBoxRef = tableBox;
         
         // Function to sort and rebuild table
         const rebuildTable = (column, ascending) => {
@@ -353,6 +381,91 @@ app.connect('startup', () => {
         scrolled.set_visible(true);
         mainBox.append(scrolled);
         console.log(`Scrolled window with table added to mainBox, projects count: ${projects.length}`);
+        
+        // Add reload button to header bar (left side) - must be inside this block to access rebuildTable
+        const reloadButton = new Gtk.Button({
+            icon_name: 'view-refresh-symbolic',
+            tooltip_text: 'Reload projects'
+        });
+        
+        reloadButton.connect('clicked', () => {
+            // First, trigger the extension to check for updates
+            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+            try {
+                signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+                console.log('Reload signal file created');
+                
+                // Store initial project count and identifiers to detect changes
+                const initialProjectCount = projects.length;
+                const initialProjectIds = projects.map(p => {
+                    const source = p.source || 'github';
+                    return source === 'release-monitoring' 
+                        ? (p.projectName || p.owner || 'unknown')
+                        : `${p.owner}/${p.repo}`;
+                }).sort();
+                
+                // Wait a moment for the extension to process, then refresh the window
+                // Try multiple times in case the update takes a bit longer
+                let attempts = 0;
+                const maxAttempts = 10; // Increased to allow more time for new projects
+                const checkAndRefresh = () => {
+                    attempts++;
+                    if (loadProjects()) {
+                        // Check if projects changed (new project added, count changed, or releases updated)
+                        const currentProjectCount = projects.length;
+                        const currentProjectIds = projects.map(p => {
+                            const source = p.source || 'github';
+                            return source === 'release-monitoring' 
+                                ? (p.projectName || p.owner || 'unknown')
+                                : `${p.owner}/${p.repo}`;
+                        }).sort();
+                        
+                        const projectCountChanged = currentProjectCount !== initialProjectCount;
+                        const projectIdsChanged = JSON.stringify(currentProjectIds) !== JSON.stringify(initialProjectIds);
+                        const hasReleases = projects.some(p => p.lastRelease);
+                        
+                        // Refresh if: count changed, IDs changed, releases found, or max attempts reached
+                        if (projectCountChanged || projectIdsChanged || hasReleases || attempts >= maxAttempts) {
+                            console.log(`Reload: Refreshing - count changed: ${projectCountChanged}, IDs changed: ${projectIdsChanged}, has releases: ${hasReleases}, attempts: ${attempts}`);
+                            rebuildTable(sortColumn, sortAscending);
+                            return false; // Stop checking
+                        }
+                    }
+                    if (attempts < maxAttempts) {
+                        return true; // Continue checking
+                    }
+                    // Final refresh even if no changes detected
+                    console.log(`Reload: Final refresh after ${attempts} attempts`);
+                    rebuildTable(sortColumn, sortAscending);
+                    return false;
+                };
+                
+                // Check every 500ms for up to 5 seconds (increased from 2.5)
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, checkAndRefresh);
+            } catch (e) {
+                console.log(`Could not create reload signal file: ${e.message}`);
+            }
+        });
+        headerBar.pack_start(reloadButton);
+    }
+    
+    // Add reload button for empty projects case (if projects.length === 0)
+    if (projects.length === 0) {
+        const reloadButtonEmpty = new Gtk.Button({
+            icon_name: 'view-refresh-symbolic',
+            tooltip_text: 'Reload projects'
+        });
+        
+        reloadButtonEmpty.connect('clicked', () => {
+            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+            try {
+                signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+                console.log('Reload signal file created (empty projects case)');
+            } catch (e) {
+                console.log(`Could not create reload signal file: ${e.message}`);
+            }
+        });
+        headerBar.pack_start(reloadButtonEmpty);
     }
     
     // Add settings button to header bar (left side)

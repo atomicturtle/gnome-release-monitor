@@ -84,16 +84,41 @@ const ConfigManager = class {
     }
 
     removeProject(owner, repo, source = 'github') {
+        console.log(`removeProject: Removing project owner=${owner}, repo=${repo}, source=${source}`);
+        const beforeCount = this.projects.length;
+        
         if (source === 'release-monitoring') {
             this.projects = this.projects.filter(
-                p => !(p.source === 'release-monitoring' && p.projectName === owner)
+                p => {
+                    const matches = p.source === 'release-monitoring' && p.projectName === owner;
+                    if (matches) {
+                        console.log(`removeProject: Filtering out release-monitoring project: ${p.projectName}`);
+                    }
+                    return !matches;
+                }
             );
         } else {
+            // For GitHub projects, also handle projects without source field (backward compatibility)
+            // Projects with null/undefined source are treated as GitHub projects
             this.projects = this.projects.filter(
-                p => !(p.source === 'github' && p.owner === owner && p.repo === repo)
+                p => {
+                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                    const matches = isGitHub && p.owner === owner && p.repo === repo;
+                    if (matches) {
+                        console.log(`removeProject: Filtering out GitHub project: ${p.owner}/${p.repo} (source was: ${p.source})`);
+                    }
+                    return !matches;
+                }
             );
         }
+        
+        const afterCount = this.projects.length;
+        console.log(`removeProject: Project count changed from ${beforeCount} to ${afterCount}`);
+        if (beforeCount === afterCount) {
+            console.error(`removeProject: WARNING - Project was not removed! Check if project exists with owner=${owner}, repo=${repo}, source=${source}`);
+        }
         this.save();
+        console.log(`removeProject: Config saved after removal`);
     }
 
     updateProjectRelease(owner, repo, release) {
@@ -403,6 +428,66 @@ const ReleaseMonitoringAPI = class {
         });
     }
 
+    async getVersionInfo(projectId, version) {
+        // Try to get version-specific information including "retrieved on" date
+        const url = `${this.baseUrl}/versions/?project_id=${projectId}&version=${encodeURIComponent(version)}`;
+        const message = Soup.Message.new('GET', url);
+        
+        message.request_headers.append('User-Agent', 'GNOME-Release-Monitor');
+        message.request_headers.append('Accept', 'application/json');
+        
+        if (this.apiToken && this.apiToken.trim()) {
+            message.request_headers.replace('Authorization', `token ${this.apiToken.trim()}`);
+        }
+
+        return new Promise((resolve, reject) => {
+            this.session.send_and_read_async(
+                message,
+                GLib.PRIORITY_DEFAULT,
+                null,
+                (session, result) => {
+                    try {
+                        const bytes = session.send_and_read_finish(result);
+                        const status = message.get_status();
+                        
+                        if (status === 200) {
+                            try {
+                                const decoder = new TextDecoder('utf-8');
+                                const data = bytes.get_data();
+                                if (!data) {
+                                    resolve(null);
+                                    return;
+                                }
+                                const response = decoder.decode(data);
+                                
+                                if (response.trim().startsWith('<') || response.includes('<!DOCTYPE')) {
+                                    resolve(null);
+                                    return;
+                                }
+                                
+                                const json = JSON.parse(response);
+                                // The API might return version info in items array or directly
+                                if (json.items && json.items.length > 0) {
+                                    resolve(json.items[0]);
+                                } else if (json.created_on || json.retrieved_on || json.first_seen) {
+                                    resolve(json);
+                                } else {
+                                    resolve(null);
+                                }
+                            } catch (e) {
+                                resolve(null);
+                            }
+                        } else {
+                            resolve(null);
+                        }
+                    } catch (e) {
+                        resolve(null);
+                    }
+                }
+            );
+        });
+    }
+
     async getLatestRelease(projectName, versionFilter = null) {
         // First, search for the project
         const project = await this.searchProject(projectName);
@@ -441,7 +526,30 @@ const ReleaseMonitoringAPI = class {
             }
         }
         
-        // Fallback to updated_on if we don't have a GitHub release date
+        // For non-GitHub projects, try to get the "Retrieved on" date from version info
+        if (!publishedAt && project.id && latestVersion) {
+            try {
+                console.log(`Fetching version info for project ${project.id}, version ${latestVersion}`);
+                const versionInfo = await this.getVersionInfo(project.id, latestVersion);
+                if (versionInfo) {
+                    // Check for various possible date fields
+                    if (versionInfo.retrieved_on) {
+                        publishedAt = new Date(versionInfo.retrieved_on * 1000).toISOString();
+                        console.log(`Got retrieved_on date from version info: ${publishedAt}`);
+                    } else if (versionInfo.created_on) {
+                        publishedAt = new Date(versionInfo.created_on * 1000).toISOString();
+                        console.log(`Got created_on date from version info: ${publishedAt}`);
+                    } else if (versionInfo.first_seen) {
+                        publishedAt = new Date(versionInfo.first_seen * 1000).toISOString();
+                        console.log(`Got first_seen date from version info: ${publishedAt}`);
+                    }
+                }
+            } catch (e) {
+                console.log(`Could not fetch version info: ${e.message}`);
+            }
+        }
+        
+        // Fallback to updated_on if we don't have a better date
         if (!publishedAt) {
             if (project.updated_on) {
                 publishedAt = new Date(project.updated_on * 1000).toISOString();
@@ -487,13 +595,28 @@ const ReleaseMonitoringAPI = class {
                     const matchingVersion = matchingVersions[0];
                     // For filtered versions, we may not have the exact GitHub release, so use updated_on
                     const filteredPublishedAt = project.updated_on ? new Date(project.updated_on * 1000).toISOString() : null;
+                    // Construct the proper release URL (version check URL)
+                    let filteredReleaseUrl = project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+                    if (project.backend === 'GitHub' && project.version_url) {
+                        const [owner, repo] = project.version_url.split('/');
+                        if (owner && repo) {
+                            const tagName = matchingVersion.startsWith('v') ? matchingVersion : `v${matchingVersion}`;
+                            filteredReleaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${tagName}`;
+                        }
+                    } else if (project.backend === 'GNU project' || project.backend === 'GNU') {
+                        filteredReleaseUrl = `https://ftp.gnu.org/gnu/${project.name}/`;
+                    } else {
+                        filteredReleaseUrl = project.ecosystem || project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+                    }
                     return {
                         version: matchingVersion,
                         tag_name: matchingVersion,
                         name: matchingVersion,
                         published_at: filteredPublishedAt, // Use updated_on as "Retrieved on (UTC)"
-                        html_url: project.homepage || `https://release-monitoring.org/project/${project.id}/`,
-                        body: null
+                        html_url: filteredReleaseUrl, // Proper release URL
+                        body: null,
+                        backend: project.backend,
+                        version_url: project.version_url
                     };
                 } else {
                     console.log(`No stable versions available for filtering`);
@@ -502,14 +625,35 @@ const ReleaseMonitoringAPI = class {
             }
         }
 
+        // Construct the proper release URL (version check URL, not homepage)
+        let releaseUrl = project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+        
+        // For GitHub-backed projects, construct GitHub releases URL
+        if (project.backend === 'GitHub' && project.version_url) {
+            const [owner, repo] = project.version_url.split('/');
+            if (owner && repo) {
+                // Try to construct URL to specific release tag, fallback to releases page
+                const tagName = latestVersion.startsWith('v') ? latestVersion : `v${latestVersion}`;
+                releaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${tagName}`;
+            }
+        } else if (project.backend === 'GNU project' || project.backend === 'GNU') {
+            // For GNU projects, construct FTP URL: https://ftp.gnu.org/gnu/{project-name}/
+            releaseUrl = `https://ftp.gnu.org/gnu/${project.name}/`;
+        } else {
+            // For other backends, try to use ecosystem if available, otherwise homepage
+            releaseUrl = project.ecosystem || project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+        }
+        
         // Return the latest version with the date we fetched (or fallback to updated_on)
         return {
             version: latestVersion,
             tag_name: latestVersion,
             name: latestVersion,
             published_at: publishedAt, // GitHub release date or updated_on as fallback
-            html_url: project.homepage || `https://release-monitoring.org/project/${project.id}/`,
-            body: null
+            html_url: releaseUrl, // Proper release URL (GitHub releases or homepage)
+            body: null,
+            backend: project.backend, // Store backend for report window
+            version_url: project.version_url // Store version_url for report window
         };
     }
 
@@ -669,15 +813,24 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         });
         removeButton.add_css_class('destructive-action');
         removeButton.connect('clicked', () => {
-            if (source === 'release-monitoring') {
+            // Determine the actual source (handle null/undefined for backward compatibility)
+            const actualSource = source || project.source || 'github';
+            console.log(`Remove button clicked for project: ${displayName}, source: ${actualSource}`);
+            
+            if (actualSource === 'release-monitoring') {
+                const projectName = project.projectName || project.owner;
+                console.log(`Removing release-monitoring project: ${projectName}`);
                 group._configManager.removeProject(
-                    project.projectName || project.owner,
+                    projectName,
                     null,
-                    source
+                    actualSource
                 );
             } else {
-                group._configManager.removeProject(project.owner, project.repo, source);
+                console.log(`Removing GitHub project: ${project.owner}/${project.repo}`);
+                group._configManager.removeProject(project.owner, project.repo, actualSource);
             }
+            // Reload the config to ensure we have the latest data
+            group._configManager.load();
             this._loadProjects(group);
         });
         

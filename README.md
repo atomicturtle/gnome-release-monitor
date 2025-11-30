@@ -4,11 +4,12 @@ A GNOME Shell extension that monitors GitHub projects for new releases and notif
 
 ## Features
 
-- Monitor multiple GitHub repositories for new releases
+- Monitor multiple GitHub repositories and release-monitoring.org projects for new releases
 - Get desktop notifications when new releases are detected
 - View all monitored projects and their current releases in a preferences window
 - Easy-to-use interface to add and remove projects
-- Automatic checking every 30 minutes
+- Automatic checking every 30 minutes (configurable)
+- Visual indicator icon changes when new releases are available
 
 ## Installation
 
@@ -54,6 +55,10 @@ The list of monitored projects is stored in:
 
 You can manually edit this file if needed, but it's recommended to use the preferences window.
 
+### Known Limitations
+
+- **release-monitoring.org "Retrieved on" date**: The "Retrieved on (UTC)" date shown on the release-monitoring.org web interface is not exposed via their API v2. The extension uses the project's `updated_on` timestamp (when the project was last checked) as a fallback, which may not match the exact date when a specific version was first detected.
+
 ## Requirements
 
 - GNOME Shell 45 or later
@@ -67,6 +72,27 @@ If the extension doesn't work:
 2. Check for errors: `journalctl -f | grep -i "release-monitor"`
 3. Make sure you have an internet connection
 4. Verify the GitHub repository exists and has releases
+
+## Testing
+
+To test the notification icon functionality:
+
+1. Run the test script to simulate a new release:
+   ```bash
+   ./test-new-release.sh
+   ```
+2. Select a project from the list
+3. The script will modify the project's stored release to an older version
+4. Trigger a check by:
+   - Clicking the reload button in the report window, OR
+   - Waiting for the automatic check interval, OR
+   - Restarting GNOME Shell (Alt+F2, type `r`)
+5. The notification icon should change to indicate a new release is available
+6. When you open the report window, the icon should return to normal
+7. To restore the original state:
+   ```bash
+   ./restore-projects.sh
+   ```
 
 ## Development
 

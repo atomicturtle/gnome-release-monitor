@@ -117,13 +117,34 @@ const ConfigManager = class {
             );
         }
         if (project) {
-            project.lastRelease = release;
+            // Ensure the release object has all necessary fields
+            const releaseToSave = {
+                tag_name: release.tag_name || release.version || release.name,
+                version: release.version || release.tag_name || release.name,
+                name: release.name || release.tag_name || release.version,
+                published_at: release.published_at || null,
+                html_url: release.html_url || null,
+                body: release.body || null
+            };
+            project.lastRelease = releaseToSave;
             project.lastChecked = new Date().toISOString();
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${release.tag_name || release.version} for ${identifier}`);
+            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier}`);
             this.save();
             console.log(`updateProjectRelease: Config saved, reloading...`);
             this.load(); // Reload to ensure consistency
+            // Verify after reload
+            const verifyProject = this.projects.find(
+                source === 'release-monitoring'
+                    ? (p => p.source === 'release-monitoring' && p.projectName === projectName)
+                    : (p => p.source === 'github' && p.owner === owner && p.repo === repo)
+            );
+            if (verifyProject && verifyProject.lastRelease) {
+                const savedVersion = verifyProject.lastRelease.tag_name || verifyProject.lastRelease.version;
+                console.log(`updateProjectRelease: Verified saved version is ${savedVersion} for ${identifier}`);
+            } else {
+                console.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier}`);
+            }
         } else {
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
             console.error(`updateProjectRelease: Project ${identifier} not found in config`);
@@ -450,6 +471,66 @@ const ReleaseMonitoringAPI = class {
         });
     }
 
+    async getVersionInfo(projectId, version) {
+        // Try to get version-specific information including "retrieved on" date
+        const url = `${this.baseUrl}/versions/?project_id=${projectId}&version=${encodeURIComponent(version)}`;
+        const message = Soup.Message.new('GET', url);
+        
+        message.request_headers.append('User-Agent', 'GNOME-Release-Monitor');
+        message.request_headers.append('Accept', 'application/json');
+        
+        if (this.apiToken && this.apiToken.trim()) {
+            message.request_headers.replace('Authorization', `token ${this.apiToken.trim()}`);
+        }
+
+        return new Promise((resolve, reject) => {
+            this.session.send_and_read_async(
+                message,
+                GLib.PRIORITY_DEFAULT,
+                null,
+                (session, result) => {
+                    try {
+                        const bytes = session.send_and_read_finish(result);
+                        const status = message.get_status();
+                        
+                        if (status === 200) {
+                            try {
+                                const decoder = new TextDecoder('utf-8');
+                                const data = bytes.get_data();
+                                if (!data) {
+                                    resolve(null);
+                                    return;
+                                }
+                                const response = decoder.decode(data);
+                                
+                                if (response.trim().startsWith('<') || response.includes('<!DOCTYPE')) {
+                                    resolve(null);
+                                    return;
+                                }
+                                
+                                const json = JSON.parse(response);
+                                // The API might return version info in items array or directly
+                                if (json.items && json.items.length > 0) {
+                                    resolve(json.items[0]);
+                                } else if (json.created_on || json.retrieved_on || json.first_seen) {
+                                    resolve(json);
+                                } else {
+                                    resolve(null);
+                                }
+                            } catch (e) {
+                                resolve(null);
+                            }
+                        } else {
+                            resolve(null);
+                        }
+                    } catch (e) {
+                        resolve(null);
+                    }
+                }
+            );
+        });
+    }
+
     async getLatestRelease(projectName, versionFilter = null) {
         // First, search for the project
         const project = await this.searchProject(projectName);
@@ -489,7 +570,30 @@ const ReleaseMonitoringAPI = class {
             }
         }
         
-        // Fallback to updated_on if we don't have a GitHub release date
+        // For non-GitHub projects, try to get the "Retrieved on" date from version info
+        if (!publishedAt && project.id && latestVersion) {
+            try {
+                console.log(`Fetching version info for project ${project.id}, version ${latestVersion}`);
+                const versionInfo = await this.getVersionInfo(project.id, latestVersion);
+                if (versionInfo) {
+                    // Check for various possible date fields
+                    if (versionInfo.retrieved_on) {
+                        publishedAt = new Date(versionInfo.retrieved_on * 1000).toISOString();
+                        console.log(`Got retrieved_on date from version info: ${publishedAt}`);
+                    } else if (versionInfo.created_on) {
+                        publishedAt = new Date(versionInfo.created_on * 1000).toISOString();
+                        console.log(`Got created_on date from version info: ${publishedAt}`);
+                    } else if (versionInfo.first_seen) {
+                        publishedAt = new Date(versionInfo.first_seen * 1000).toISOString();
+                        console.log(`Got first_seen date from version info: ${publishedAt}`);
+                    }
+                }
+            } catch (e) {
+                console.log(`Could not fetch version info: ${e.message}`);
+            }
+        }
+        
+        // Fallback to updated_on if we don't have a better date
         if (!publishedAt) {
             if (project.updated_on) {
                 publishedAt = new Date(project.updated_on * 1000).toISOString();
@@ -517,13 +621,28 @@ const ReleaseMonitoringAPI = class {
                     const matchingVersion = matchingVersions[0];
                     // For filtered versions, we may not have the exact GitHub release, so use updated_on
                     const filteredPublishedAt = project.updated_on ? new Date(project.updated_on * 1000).toISOString() : null;
+                    // Construct the proper release URL (version check URL)
+                    let filteredReleaseUrl = project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+                    if (project.backend === 'GitHub' && project.version_url) {
+                        const [owner, repo] = project.version_url.split('/');
+                        if (owner && repo) {
+                            const tagName = matchingVersion.startsWith('v') ? matchingVersion : `v${matchingVersion}`;
+                            filteredReleaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${tagName}`;
+                        }
+                    } else if (project.backend === 'GNU project' || project.backend === 'GNU') {
+                        filteredReleaseUrl = `https://ftp.gnu.org/gnu/${project.name}/`;
+                    } else {
+                        filteredReleaseUrl = project.ecosystem || project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+                    }
                     return {
                         version: matchingVersion,
                         tag_name: matchingVersion, // For compatibility
                         name: matchingVersion,
                         published_at: filteredPublishedAt, // Use updated_on as "Retrieved on (UTC)"
-                        html_url: project.homepage || `https://release-monitoring.org/project/${project.id}/`,
-                        body: null
+                        html_url: filteredReleaseUrl, // Proper release URL
+                        body: null,
+                        backend: project.backend,
+                        version_url: project.version_url
                     };
                 } else {
                     console.log(`No stable versions available for filtering`);
@@ -532,14 +651,35 @@ const ReleaseMonitoringAPI = class {
             }
         }
 
+        // Construct the proper release URL (version check URL, not homepage)
+        let releaseUrl = project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+        
+        // For GitHub-backed projects, construct GitHub releases URL
+        if (project.backend === 'GitHub' && project.version_url) {
+            const [owner, repo] = project.version_url.split('/');
+            if (owner && repo) {
+                // Try to construct URL to specific release tag, fallback to releases page
+                const tagName = latestVersion.startsWith('v') ? latestVersion : `v${latestVersion}`;
+                releaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${tagName}`;
+            }
+        } else if (project.backend === 'GNU project' || project.backend === 'GNU') {
+            // For GNU projects, construct FTP URL: https://ftp.gnu.org/gnu/{project-name}/
+            releaseUrl = `https://ftp.gnu.org/gnu/${project.name}/`;
+        } else {
+            // For other backends, try to use ecosystem if available, otherwise homepage
+            releaseUrl = project.ecosystem || project.homepage || `https://release-monitoring.org/project/${project.id}/`;
+        }
+        
         // Return the latest version with the date we fetched (or fallback to updated_on)
         return {
             version: latestVersion,
             tag_name: latestVersion, // For compatibility
             name: latestVersion,
             published_at: publishedAt, // GitHub release date or updated_on as fallback
-            html_url: project.homepage || `https://release-monitoring.org/project/${project.id}/`,
-            body: null
+            html_url: releaseUrl, // Proper release URL (GitHub releases or homepage)
+            body: null,
+            backend: project.backend, // Store backend for report window
+            version_url: project.version_url // Store version_url for report window
         };
     }
 
@@ -691,24 +831,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         
         box.add_child(textBox);
         
-        // Remove button
-        const removeButton = new St.Button({
-            style_class: 'popup-menu-item',
-            child: new St.Icon({ icon_name: 'edit-delete-symbolic', icon_size: 16 })
-        });
-        removeButton.connect('clicked', () => {
-            if (source === 'release-monitoring') {
-                this._extension.configManager.removeProject(
-                    project.projectName || project.owner,
-                    null,
-                    source
-                );
-            } else {
-                this._extension.configManager.removeProject(project.owner, project.repo, source);
-            }
-            this._buildMenu(); // Refresh menu
-        });
-        box.add_child(removeButton);
+        // Remove button removed - users should use the preferences window to remove projects
         
         item.actor.add_child(box);
         this.menu.addMenuItem(item);
@@ -717,6 +840,12 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
     _openReportWindow() {
         if (!this._extension) {
             return;
+        }
+        
+        // Clear the notification icon when window is opened (user has seen the updates)
+        if (this.indicator) {
+            this.indicator.updateIcon(false);
+            console.log('_openReportWindow: Cleared notification icon');
         }
         
         // Check if window is already open - if so, just skip (can't bring to front from separate process)
@@ -735,34 +864,15 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             }
         }
         
-        const projects = this._extension.configManager.getProjects();
         const version = this._extension.metadata.version || '1';
-        
-        // Use a separate script file to create the window
-        // This avoids crashes by running GTK in a separate process
-        const projectsJson = JSON.stringify(projects);
         
         // Get the extension directory path
         const extensionDir = this._extension.path;
         const reportWindowScript = GLib.build_filenamev([extensionDir, 'report-window.js']);
         
-        // Write projects to a temporary JSON file
-        let projectsFile = null;
-        try {
-            const [fd, projectsFilePath] = GLib.file_open_tmp('release-monitor-projects-XXXXXX.json');
-            GLib.close(fd);
-            projectsFile = Gio.File.new_for_path(projectsFilePath);
-            
-            const encoder = new TextEncoder();
-            const data = encoder.encode(projectsJson);
-            projectsFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
-            
-            console.log(`_openReportWindow: Projects written to ${projectsFilePath}`);
-        } catch (e) {
-            console.error(`_openReportWindow: Failed to write projects file: ${e.message}`);
-            Main.notify('Error', `Failed to prepare report window: ${e.message}`);
-            return;
-        }
+        // Use "config" as the argument to tell report-window.js to read from the actual config file
+        // This ensures the window always shows the latest projects, even if they're added after the window is opened
+        const configArg = 'config';
         
         // Launch the report window script
         try {
@@ -771,11 +881,11 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
                 throw new Error(`Report window script not found: ${reportWindowScript}`);
             }
             
-            console.log(`_openReportWindow: Launching ${reportWindowScript} with projects file ${projectsFile.get_path()}`);
+            console.log(`_openReportWindow: Launching ${reportWindowScript} with config file argument`);
             
             const [success, pid] = GLib.spawn_async(
                 null,
-                ['gjs', '-m', reportWindowScript, projectsFile.get_path(), version],
+                ['gjs', '-m', reportWindowScript, configArg, version],
                 null,
                 GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
                 null
@@ -793,14 +903,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, status) => {
                 console.log(`_openReportWindow: Process ${pid} exited with status ${status}`);
                 this._reportWindowProcessId = null;
-                // Clean up the temporary projects file
-                try {
-                    if (projectsFile) {
-                        projectsFile.delete(null);
-                    }
-                } catch (e) {
-                    // Ignore cleanup errors
-                }
+                // No need to clean up - we're using the config file directly now
                 GLib.spawn_close_pid(pid);
                 return GLib.SOURCE_REMOVE;
             });
@@ -808,14 +911,6 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             console.error(`Error launching report window: ${e.message}`);
             console.error(`Stack trace: ${e.stack}`);
             Main.notify('Error', `Failed to open report window: ${e.message}`);
-            // Clean up the temporary projects file on error
-            try {
-                if (projectsFile) {
-                    projectsFile.delete(null);
-                }
-            } catch (cleanupError) {
-                // Ignore cleanup errors
-            }
         }
     }
     
@@ -888,6 +983,7 @@ export default class ReleaseMonitorExtension extends Extension {
         this._wasInStatusArea = false; // Track if indicator was ever added via addToStatusArea
         this._settingsWatchId = null; // File watcher for settings signal
         this._settingsUpdateWatchId = null; // File watcher for settings updates
+        this._reloadWatchId = null; // File watcher for reload signal
         this._settingsWindowProcessId = null; // Track settings window process
     }
 
@@ -921,6 +1017,9 @@ export default class ReleaseMonitorExtension extends Extension {
         
         // Watch for settings updates from settings window
         this._startSettingsUpdateWatcher();
+        
+        // Watch for reload signal from report window
+        this._startReloadWatcher();
         
         // Start check interval based on settings
         this._restartCheckInterval();
@@ -1222,6 +1321,36 @@ export default class ReleaseMonitorExtension extends Extension {
         );
     }
     
+    _startReloadWatcher() {
+        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+        
+        // Check for reload signal file periodically
+        this._reloadWatchId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            1, // Check every second
+            () => {
+                try {
+                    if (signalFile.query_exists(null)) {
+                        // Signal file exists - trigger reload
+                        console.log('Reload signal file detected, checking for updates...');
+                        // Reload config first to get any newly added projects
+                        this.configManager.load();
+                        this.checkForUpdates();
+                        // Delete the signal file
+                        try {
+                            signalFile.delete(null);
+                        } catch (e) {
+                            console.log(`Could not delete reload signal file: ${e.message}`);
+                        }
+                    }
+                } catch (e) {
+                    console.log(`Error checking reload signal file: ${e.message}`);
+                }
+                return true; // Continue watching
+            }
+        );
+    }
+    
     _applySettingsUpdate() {
         // Read settings from JSON file
         const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
@@ -1293,6 +1422,10 @@ export default class ReleaseMonitorExtension extends Extension {
     }
 
     disable() {
+        if (this._reloadWatchId) {
+            GLib.source_remove(this._reloadWatchId);
+            this._reloadWatchId = null;
+        }
         if (this._settingsUpdateWatchId) {
             GLib.source_remove(this._settingsUpdateWatchId);
             this._settingsUpdateWatchId = null;
@@ -1316,6 +1449,8 @@ export default class ReleaseMonitorExtension extends Extension {
     }
 
     async checkForUpdates() {
+        // Reload config to get latest projects (in case they were added via prefs.js)
+        this.configManager.load();
         const projects = this.configManager.getProjects();
         console.log(`checkForUpdates: Checking ${projects.length} projects`);
         let hasNewReleases = false;
@@ -1343,37 +1478,75 @@ export default class ReleaseMonitorExtension extends Extension {
                 if (release) {
                     const releaseVersion = release.tag_name || release.version || release.name;
                     console.log(`checkForUpdates: Found release ${releaseVersion} for ${projectIdentifier}`);
+                    console.log(`checkForUpdates: Release object: ${JSON.stringify({tag_name: release.tag_name, version: release.version, name: release.name})}`);
                     
-                    // For release-monitoring.org, published_at may be null, so we compare versions instead
+                    // Check if this is a new release
+                    // For release-monitoring.org, published_at may be null, so we compare versions
+                    // For GitHub, we compare both version and date to be more reliable
                     const isNewRelease = source === 'release-monitoring' 
                         ? (!project.lastRelease || (project.lastRelease.version || project.lastRelease.tag_name) !== releaseVersion)
                         : (() => {
+                            // First check if version changed (more reliable than date)
+                            const lastReleaseVersion = project.lastRelease 
+                                ? (project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name)
+                                : null;
+                            if (lastReleaseVersion !== releaseVersion) {
+                                console.log(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion}`);
+                                return true;
+                            }
+                            // If version is the same, check date
                             const releaseDate = release.published_at ? new Date(release.published_at) : null;
                             const lastReleaseDate = project.lastRelease && project.lastRelease.published_at
                                 ? new Date(project.lastRelease.published_at)
                                 : null;
-                            return !lastReleaseDate || (releaseDate && releaseDate > lastReleaseDate);
+                            if (releaseDate && lastReleaseDate && releaseDate > lastReleaseDate) {
+                                console.log(`checkForUpdates: Date changed from ${lastReleaseDate} to ${releaseDate}`);
+                                return true;
+                            }
+                            // If no lastRelease, it's new
+                            if (!project.lastRelease) {
+                                return true;
+                            }
+                            return false;
                         })();
                     
                     // Always update the config with the latest release info
-                    console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier}`);
-                    if (source === 'release-monitoring') {
-                        this.configManager.updateProjectRelease(
-                            null, // owner not used for release-monitoring
-                            null, // repo not used for release-monitoring
-                            release,
-                            source,
-                            project.projectName || project.owner
+                    console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}`);
+                    try {
+                        if (source === 'release-monitoring') {
+                            this.configManager.updateProjectRelease(
+                                null, // owner not used for release-monitoring
+                                null, // repo not used for release-monitoring
+                                release,
+                                source,
+                                project.projectName || project.owner
+                            );
+                        } else {
+                            this.configManager.updateProjectRelease(
+                                project.owner,
+                                project.repo,
+                                release,
+                                source
+                            );
+                        }
+                        console.log(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);
+                        // Verify the update by reloading and checking
+                        this.configManager.load();
+                        const updatedProject = this.configManager.getProjects().find(
+                            p => source === 'release-monitoring' 
+                                ? (p.source === 'release-monitoring' && p.projectName === (project.projectName || project.owner))
+                                : (p.source === 'github' && p.owner === project.owner && p.repo === project.repo)
                         );
-                    } else {
-                        this.configManager.updateProjectRelease(
-                            project.owner,
-                            project.repo,
-                            release,
-                            source
-                        );
+                        if (updatedProject && updatedProject.lastRelease) {
+                            const savedVersion = updatedProject.lastRelease.tag_name || updatedProject.lastRelease.version || updatedProject.lastRelease.name;
+                            console.log(`checkForUpdates: Verified saved version is ${savedVersion} for ${projectIdentifier}`);
+                        } else {
+                            console.error(`checkForUpdates: WARNING - Could not verify saved release for ${projectIdentifier}`);
+                        }
+                    } catch (e) {
+                        console.error(`checkForUpdates: Error updating project release: ${e.message}`);
+                        log(`checkForUpdates: Error updating project release: ${e}`);
                     }
-                    console.log(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);
                     
                     // Check if this is a new release
                     if (isNewRelease) {
