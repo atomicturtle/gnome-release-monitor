@@ -377,8 +377,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             // If window is already open, completely block all clicks to prevent conflicts
             if (this._reportWindowProcessId) {
                 // Window is open - prevent any menu interaction
-                // Also prevent the menu from even trying to open
-                event.stop_propagation();
+                // Returning true stops event propagation in Clutter
                 return true; // Stop event propagation completely
             }
             
@@ -411,13 +410,6 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             reactive: false
         });
         this.menu.addMenuItem(titleItem);
-        
-        // Add button
-        const addItem = new PopupMenu.PopupMenuItem('➕ Add Project');
-        addItem.connect('activate', () => {
-            this._showAddDialog();
-        });
-        this.menu.addMenuItem(addItem);
         
         // Separator
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -645,15 +637,30 @@ export default class ReleaseMonitorExtension extends Extension {
         this.githubAPI = null;
         this.indicator = null;
         this.checkInterval = null;
+        this.settings = null;
+        this._settingsChangedId = null;
+        this._wasInStatusArea = false; // Track if indicator was ever added via addToStatusArea
+        this._settingsWatchId = null; // File watcher for settings signal
     }
 
     enable() {
         this.configManager = new ConfigManager();
         this.githubAPI = new GitHubAPI();
+        this.settings = this.getSettings();
         
         this.indicator = new ReleaseMonitorIndicator();
         this.indicator._setExtension(this);
-        Main.panel.addToStatusArea('release-monitor', this.indicator);
+        
+        // Add indicator to panel based on position setting
+        this._addIndicatorToPanel();
+        
+        // Watch for settings changes
+        this._settingsChangedId = this.settings.connect('changed::icon-position', () => {
+            this._moveIndicator();
+        });
+        
+        // Watch for settings signal file from report window
+        this._startSettingsWatcher();
         
         // Check for updates every 30 minutes
         this.checkInterval = GLib.timeout_add_seconds(
@@ -672,7 +679,232 @@ export default class ReleaseMonitorExtension extends Extension {
         });
     }
 
+    _addIndicatorToPanel() {
+        let position = 'right'; // Default
+        try {
+            position = this.settings.get_string('icon-position') || 'right';
+        } catch (e) {
+            console.log(`Could not read icon-position setting: ${e.message}, using default 'right'`);
+        }
+        
+        // Remove from any existing position first
+        const currentParent = this.indicator.get_parent();
+        if (currentParent) {
+            currentParent.remove_child(this.indicator);
+        }
+        
+        // If moving to/from status area, we need to remove it from status area tracking
+        // Check if it's currently registered in status area
+        if (Main.panel.statusArea && Main.panel.statusArea._indicators) {
+            // Try to remove from status area's internal tracking if it exists
+            try {
+                const indicators = Main.panel.statusArea._indicators;
+                if (indicators.get_children().includes(this.indicator)) {
+                    indicators.remove_child(this.indicator);
+                }
+            } catch (e) {
+                // Ignore - might not be in status area
+            }
+        }
+        
+        // Add to the appropriate panel area
+        // Note: _leftBox and _centerBox are private APIs and may not be available in all GNOME versions
+        try {
+            if (position === 'left' && Main.panel._leftBox) {
+                Main.panel._leftBox.insert_child_at_index(this.indicator, -1);
+                console.log('Added indicator to left panel');
+                return;
+            } else if (position === 'center' && Main.panel._centerBox) {
+                Main.panel._centerBox.insert_child_at_index(this.indicator, -1);
+                console.log('Added indicator to center panel');
+                return;
+            }
+        } catch (e) {
+            console.log(`Could not add indicator to ${position} panel: ${e.message}, falling back to right`);
+        }
+        
+        // Default to right (status area)
+        // Insert just before system controls (power, settings, etc.) instead of at the end
+        try {
+            // Try different approaches to add to status area
+            if (Main.panel.statusArea) {
+                // Check if statusArea has _rightBox (most common structure)
+                if (Main.panel.statusArea._rightBox) {
+                    const container = Main.panel.statusArea._rightBox;
+                    const children = container.get_children();
+                    // Find system indicators (usually at the end) and insert before them
+                    // System indicators are typically the last few items
+                    // Insert at position that's before the system controls
+                    const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items (system controls)
+                    container.insert_child_at_index(this.indicator, insertIndex);
+                    console.log(`Added indicator to right panel (status area) via _rightBox at index ${insertIndex}`);
+                    return;
+                }
+                // Check for _indicators container
+                if (Main.panel.statusArea._indicators) {
+                    const container = Main.panel.statusArea._indicators;
+                    const children = container.get_children();
+                    const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items
+                    container.insert_child_at_index(this.indicator, insertIndex);
+                    console.log(`Added indicator to right panel (status area) via _indicators at index ${insertIndex}`);
+                    return;
+                }
+                // Check if statusArea itself is a container
+                if (typeof Main.panel.statusArea.insert_child_at_index === 'function') {
+                    const container = Main.panel.statusArea;
+                    const children = container.get_children();
+                    const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items
+                    container.insert_child_at_index(this.indicator, insertIndex);
+                    console.log(`Added indicator to right panel (status area) at index ${insertIndex}`);
+                    return;
+                }
+                // Check if statusArea has add_child or append methods
+                if (typeof Main.panel.statusArea.add_child === 'function') {
+                    // For add_child, we need to find where to insert
+                    // Try to find system controls and insert before them
+                    const container = Main.panel.statusArea;
+                    const children = container.get_children();
+                    // Find a good insertion point (before system controls)
+                    // System controls are usually added last, so insert before the last few
+                    if (children.length > 0) {
+                        // Remove all children temporarily to find insertion point
+                        // Actually, better to just add and then reorder
+                        container.add_child(this.indicator);
+                        // Move to before system controls
+                        const targetIndex = Math.max(0, children.length - 2);
+                        container.set_child_at_index(this.indicator, targetIndex);
+                        console.log(`Added indicator to right panel (status area) via add_child at index ${targetIndex}`);
+                    } else {
+                        container.add_child(this.indicator);
+                        console.log('Added indicator to right panel (status area) via add_child');
+                    }
+                    return;
+                }
+            }
+            
+            // If statusArea methods don't work, try panel's _rightBox directly
+            if (Main.panel._rightBox) {
+                const container = Main.panel._rightBox;
+                const children = container.get_children();
+                const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items
+                container.insert_child_at_index(this.indicator, insertIndex);
+                console.log(`Added indicator to right panel via panel._rightBox at index ${insertIndex}`);
+                return;
+            }
+            
+            // Last resort: use addToStatusArea (but this might fail if already registered)
+            // Only use this if the indicator was never added before
+            if (!this._wasInStatusArea) {
+                Main.panel.addToStatusArea('release-monitor', this.indicator);
+                this._wasInStatusArea = true;
+                // Try to move it to before system controls
+                try {
+                    if (Main.panel.statusArea && Main.panel.statusArea._rightBox) {
+                        const container = Main.panel.statusArea._rightBox;
+                        const children = container.get_children();
+                        const currentIndex = children.indexOf(this.indicator);
+                        if (currentIndex >= 0) {
+                            const targetIndex = Math.max(0, children.length - 4); // Before system controls
+                            if (currentIndex !== targetIndex) {
+                                container.set_child_at_index(this.indicator, targetIndex);
+                                console.log(`Moved indicator from index ${currentIndex} to ${targetIndex}`);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log(`Could not reorder indicator: ${e.message}`);
+                }
+                console.log('Added indicator to right panel (status area) via addToStatusArea');
+            } else {
+                console.error('Cannot use addToStatusArea - indicator already registered. Status area structure not accessible.');
+            }
+        } catch (e) {
+            console.error(`Failed to add indicator to status area: ${e.message}`);
+            console.error(`StatusArea structure: ${JSON.stringify(Object.keys(Main.panel.statusArea || {}))}`);
+        }
+    }
+    
+    _moveIndicator() {
+        if (!this.indicator) {
+            return;
+        }
+        
+        // Remove from current position
+        if (this.indicator.get_parent()) {
+            this.indicator.get_parent().remove_child(this.indicator);
+        }
+        
+        // Add to new position
+        this._addIndicatorToPanel();
+    }
+
+    _startSettingsWatcher() {
+        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-open-settings');
+        
+        // Check for signal file periodically
+        this._settingsWatchId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            1, // Check every second
+            () => {
+                try {
+                    if (signalFile.query_exists(null)) {
+                        // Signal file exists - open preferences
+                        console.log('Settings signal file detected, opening preferences...');
+                        this._openPreferences();
+                        // Delete the signal file
+                        try {
+                            signalFile.delete(null);
+                        } catch (e) {
+                            console.log(`Could not delete signal file: ${e.message}`);
+                        }
+                    }
+                } catch (e) {
+                    console.log(`Error checking settings signal file: ${e.message}`);
+                }
+                return true; // Continue watching
+            }
+        );
+    }
+    
+    _openPreferences() {
+        // Open the Extensions app to the preferences for this extension
+        try {
+            const extensionUuid = this.metadata.uuid;
+            console.log(`_openPreferences: Opening preferences for ${extensionUuid}`);
+            
+            // Use GLib.spawn_command_line_async to launch the command
+            const command = `gnome-extensions prefs ${extensionUuid}`;
+            console.log(`_openPreferences: Executing: ${command}`);
+            
+            try {
+                GLib.spawn_command_line_async(command);
+                console.log(`_openPreferences: Command executed successfully`);
+                return;
+            } catch (spawnError) {
+                console.error(`_openPreferences: spawn_command_line_async failed: ${spawnError.message}`);
+            }
+        } catch (e) {
+            console.error(`_openPreferences: Error: ${e.message}`);
+        }
+        
+        // Fallback: try to open Extensions app directly
+        try {
+            console.log(`_openPreferences: Trying fallback - opening Extensions app`);
+            GLib.spawn_command_line_async('gnome-extensions');
+        } catch (e) {
+            console.error(`_openPreferences: Fallback failed: ${e.message}`);
+        }
+    }
+
     disable() {
+        if (this._settingsWatchId) {
+            GLib.source_remove(this._settingsWatchId);
+            this._settingsWatchId = null;
+        }
+        if (this._settingsChangedId) {
+            this.settings.disconnect(this._settingsChangedId);
+            this._settingsChangedId = null;
+        }
         if (this.indicator) {
             this.indicator.destroy();
             this.indicator = null;

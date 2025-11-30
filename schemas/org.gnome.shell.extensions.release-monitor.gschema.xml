@@ -7,6 +7,11 @@
       <description>How often to check for new releases (in seconds). Default is 1800 (30 minutes).</description>
       <range min="60" max="86400"/>
     </key>
+    <key name="icon-position" type="s">
+      <default>&apos;right&apos;</default>
+      <summary>Icon position on panel</summary>
+      <description>Where to display the icon on the panel: left, center, or right</description>
+    </key>
   </schema>
 </schemalist>
 

@@ -366,6 +366,56 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         this._loadProjects(group);
         
         page.add(group);
+        
+        // Add settings group
+        const settingsGroup = new Adw.PreferencesGroup({
+            title: 'Settings',
+            description: 'Extension preferences'
+        });
+        
+        // Icon position setting
+        const iconPositionRow = new Adw.ComboRow({
+            title: 'Icon Position',
+            subtitle: 'Choose where to display the icon on the panel'
+        });
+        
+        const settings = this.getSettings();
+        const currentPosition = settings.get_string('icon-position') || 'right';
+        
+        // Create model for combo box
+        const model = new Gtk.StringList();
+        model.append('left');
+        model.append('center');
+        model.append('right');
+        iconPositionRow.set_model(model);
+        
+        // Set current selection
+        let selectedIndex = 2; // Default to right
+        if (currentPosition === 'left') {
+            selectedIndex = 0;
+        } else if (currentPosition === 'center') {
+            selectedIndex = 1;
+        }
+        iconPositionRow.set_selected(selectedIndex);
+        
+        // Connect to changes
+        iconPositionRow.connect('notify::selected', () => {
+            const selected = iconPositionRow.get_selected();
+            let position = 'right';
+            if (selected === 0) {
+                position = 'left';
+            } else if (selected === 1) {
+                position = 'center';
+            } else if (selected === 2) {
+                position = 'right';
+            }
+            settings.set_string('icon-position', position);
+            console.log(`Icon position changed to: ${position}`);
+        });
+        
+        settingsGroup.add(iconPositionRow);
+        page.add(settingsGroup);
+        
         window.add(page);
     }
     
