@@ -12,6 +12,11 @@
       <summary>Icon position on panel</summary>
       <description>Where to display the icon on the panel: left, center, or right</description>
     </key>
+    <key name="release-monitoring-api-token" type="s">
+      <default>&apos;&apos;</default>
+      <summary>Release-monitoring.org API token</summary>
+      <description>API token for release-monitoring.org to bypass bot protection. Get your token from https://release-monitoring.org/settings/</description>
+    </key>
   </schema>
 </schemalist>
 

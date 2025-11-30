@@ -66,10 +66,12 @@ const ConfigManager = class {
         }
     }
 
-    addProject(owner, repo, versionFilter = null) {
+    addProject(owner, repo, versionFilter = null, source = 'github', projectName = null) {
         const project = {
-            owner: owner,
-            repo: repo,
+            source: source || 'github',
+            owner: owner || null,
+            repo: repo || null,
+            projectName: projectName || null, // For release-monitoring.org
             versionFilter: versionFilter || null,
             lastRelease: null,
             lastChecked: null
@@ -81,7 +83,8 @@ const ConfigManager = class {
     
     updateProjectVersionFilter(owner, repo, versionFilter) {
         const project = this.projects.find(
-            p => p.owner === owner && p.repo === repo
+            p => (p.source === 'github' && p.owner === owner && p.repo === repo) ||
+                 (p.source === 'release-monitoring' && p.projectName === owner)
         );
         if (project) {
             project.versionFilter = versionFilter || null;
@@ -89,26 +92,41 @@ const ConfigManager = class {
         }
     }
 
-    removeProject(owner, repo) {
-        this.projects = this.projects.filter(
-            p => !(p.owner === owner && p.repo === repo)
-        );
+    removeProject(owner, repo, source = 'github') {
+        if (source === 'release-monitoring') {
+            this.projects = this.projects.filter(
+                p => !(p.source === 'release-monitoring' && p.projectName === owner)
+            );
+        } else {
+            this.projects = this.projects.filter(
+                p => !(p.source === 'github' && p.owner === owner && p.repo === repo)
+            );
+        }
         this.save();
     }
 
-    updateProjectRelease(owner, repo, release) {
-        const project = this.projects.find(
-            p => p.owner === owner && p.repo === repo
-        );
+    updateProjectRelease(owner, repo, release, source = 'github', projectName = null) {
+        let project;
+        if (source === 'release-monitoring') {
+            project = this.projects.find(
+                p => p.source === 'release-monitoring' && p.projectName === projectName
+            );
+        } else {
+            project = this.projects.find(
+                p => p.source === 'github' && p.owner === owner && p.repo === repo
+            );
+        }
         if (project) {
             project.lastRelease = release;
             project.lastChecked = new Date().toISOString();
-            console.log(`updateProjectRelease: Saving release ${release.tag_name} for ${owner}/${repo}`);
+            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
+            console.log(`updateProjectRelease: Saving release ${release.tag_name || release.version} for ${identifier}`);
             this.save();
             console.log(`updateProjectRelease: Config saved, reloading...`);
             this.load(); // Reload to ensure consistency
         } else {
-            console.error(`updateProjectRelease: Project ${owner}/${repo} not found in config`);
+            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
+            console.error(`updateProjectRelease: Project ${identifier} not found in config`);
         }
     }
 
@@ -324,6 +342,213 @@ const GitHubAPI = class {
     }
 };
 
+// ============================================================================
+// ReleaseMonitoringAPI - Handles release-monitoring.org API interactions
+// ============================================================================
+const ReleaseMonitoringAPI = class {
+    constructor(apiToken = null) {
+        this.session = new Soup.Session();
+        this.baseUrl = 'https://release-monitoring.org/api/v2';
+        this.apiToken = apiToken;
+    }
+
+    // Helper function to match version pattern (similar to GitHubAPI)
+    _matchesVersionPattern(version, pattern) {
+        if (!pattern || !pattern.trim()) {
+            return true; // No filter means match all
+        }
+        
+        // Normalize the version: remove common prefixes and convert to lowercase
+        let normalizedVersion = version.toLowerCase();
+        normalizedVersion = normalizedVersion.replace(/^(v|clamav-|clamav|release-|version-)/i, '');
+        normalizedVersion = normalizedVersion.replace(/^[^0-9]+/, '');
+        
+        // Normalize pattern
+        let normalizedPattern = pattern.trim().toLowerCase().replace(/[x*]/g, '');
+        normalizedPattern = normalizedPattern.replace(/^(v|clamav-|clamav|release-|version-)/i, '');
+        normalizedPattern = normalizedPattern.replace(/^[^0-9]+/, '');
+        
+        // Build regex pattern
+        let escapedPattern = normalizedPattern.replace(/\./g, '\\.');
+        if (escapedPattern && !escapedPattern.endsWith('\\.')) {
+            escapedPattern += '\\.';
+        }
+        const regex = new RegExp('^' + escapedPattern + '\\d');
+        
+        const matches = regex.test(normalizedVersion);
+        console.log(`_matchesVersionPattern: version="${version}" (normalized: "${normalizedVersion}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
+        
+        return matches;
+    }
+
+    async searchProject(projectName) {
+        const url = `${this.baseUrl}/projects/?name=${encodeURIComponent(projectName)}`;
+        const message = Soup.Message.new('GET', url);
+        
+        message.request_headers.append('User-Agent', 'GNOME-Release-Monitor');
+        message.request_headers.append('Accept', 'application/json');
+        
+        // Add API token if available (release-monitoring.org uses Authorization header)
+        if (this.apiToken && this.apiToken.trim()) {
+            const token = this.apiToken.trim();
+            // Use replace to ensure only one Authorization header is set
+            message.request_headers.replace('Authorization', `token ${token}`);
+            console.log(`ReleaseMonitoringAPI: Using API token (${token.substring(0, 4)}...${token.substring(token.length - 4)}) for request to ${url}`);
+        } else {
+            console.log(`ReleaseMonitoringAPI: No API token available for request to ${url} - may be blocked by bot protection`);
+        }
+
+        return new Promise((resolve, reject) => {
+            this.session.send_and_read_async(
+                message,
+                GLib.PRIORITY_DEFAULT,
+                null,
+                (session, result) => {
+                    try {
+                        const bytes = session.send_and_read_finish(result);
+                        const status = message.get_status();
+                        
+                        if (status === 200) {
+                            try {
+                                const decoder = new TextDecoder('utf-8');
+                                const data = bytes.get_data();
+                                if (!data) {
+                                    reject(new Error('Empty response body'));
+                                    return;
+                                }
+                                const response = decoder.decode(data);
+                                
+                                // Check if response is HTML (bot protection)
+                                if (response.trim().startsWith('<') || response.includes('<!DOCTYPE')) {
+                                    reject(new Error(`Received HTML instead of JSON. The API may be blocking requests. Response preview: ${response.substring(0, 200)}`));
+                                    return;
+                                }
+                                
+                                const json = JSON.parse(response);
+                                
+                                if (json.items && json.items.length > 0) {
+                                    resolve(json.items[0]); // Return first match
+                                } else {
+                                    resolve(null); // No project found
+                                }
+                            } catch (e) {
+                                // Log the actual response for debugging
+                                const decoder = new TextDecoder('utf-8');
+                                const data = bytes.get_data();
+                                const response = data ? decoder.decode(data).substring(0, 500) : 'No data';
+                                console.error(`Failed to parse response. Status: ${status}, Response preview: ${response}`);
+                                reject(new Error(`Failed to parse response: ${e.message}. Response may be HTML or invalid JSON.`));
+                            }
+                        } else {
+                            reject(new Error(`Release-monitoring.org API error: ${status}`));
+                        }
+                    } catch (e) {
+                        reject(new Error(`Request failed: ${e.message}`));
+                    }
+                }
+            );
+        });
+    }
+
+    async getLatestRelease(projectName, versionFilter = null) {
+        // First, search for the project
+        const project = await this.searchProject(projectName);
+        if (!project) {
+            console.log(`No project found for: ${projectName}`);
+            return null;
+        }
+
+        // The API returns 'version' field, not 'latest_version'
+        const latestVersion = project.version || project.latest_version;
+        console.log(`Found project: ${project.name} (ID: ${project.id}, version: ${latestVersion}, backend: ${project.backend})`);
+
+        // Get the latest version from the project object
+        if (!latestVersion) {
+            console.log(`No latest version found for: ${projectName}`);
+            return null;
+        }
+        
+        // Try to get the actual release date from GitHub if backend is GitHub
+        let publishedAt = null;
+        if (project.backend === 'GitHub' && project.version_url) {
+            // version_url format is typically "owner/repo"
+            const [owner, repo] = project.version_url.split('/');
+            if (owner && repo) {
+                try {
+                    console.log(`Fetching release date from GitHub for ${owner}/${repo}, version ${latestVersion}`);
+                    const githubAPI = new GitHubAPI();
+                    // Try to get the release by tag name
+                    const release = await githubAPI.getLatestRelease(owner, repo, null);
+                    if (release && release.published_at) {
+                        publishedAt = release.published_at;
+                        console.log(`Got release date from GitHub: ${publishedAt}`);
+                    }
+                } catch (e) {
+                    console.log(`Could not fetch release date from GitHub: ${e.message}`);
+                }
+            }
+        }
+        
+        // Fallback to updated_on if we don't have a GitHub release date
+        if (!publishedAt) {
+            if (project.updated_on) {
+                publishedAt = new Date(project.updated_on * 1000).toISOString();
+                console.log(`Using updated_on as fallback date: ${publishedAt}`);
+            } else {
+                // Last resort: use current date or null
+                publishedAt = null;
+                console.log(`No date available for project ${projectName} - updated_on is not set`);
+            }
+        }
+
+        // If version filter is specified, check if latest version matches
+        if (versionFilter && versionFilter.trim()) {
+            if (!this._matchesVersionPattern(latestVersion, versionFilter)) {
+                // Latest version doesn't match, check stable_versions
+                if (project.stable_versions && project.stable_versions.length > 0) {
+                    const matchingVersions = project.stable_versions.filter(v => 
+                        this._matchesVersionPattern(v, versionFilter)
+                    );
+                    if (matchingVersions.length === 0) {
+                        console.log(`No matching versions found for pattern "${versionFilter}"`);
+                        return null;
+                    }
+                    // Use the first (latest) matching version
+                    const matchingVersion = matchingVersions[0];
+                    // For filtered versions, we may not have the exact GitHub release, so use updated_on
+                    const filteredPublishedAt = project.updated_on ? new Date(project.updated_on * 1000).toISOString() : null;
+                    return {
+                        version: matchingVersion,
+                        tag_name: matchingVersion, // For compatibility
+                        name: matchingVersion,
+                        published_at: filteredPublishedAt, // Use updated_on as "Retrieved on (UTC)"
+                        html_url: project.homepage || `https://release-monitoring.org/project/${project.id}/`,
+                        body: null
+                    };
+                } else {
+                    console.log(`No stable versions available for filtering`);
+                    return null;
+                }
+            }
+        }
+
+        // Return the latest version with the date we fetched (or fallback to updated_on)
+        return {
+            version: latestVersion,
+            tag_name: latestVersion, // For compatibility
+            name: latestVersion,
+            published_at: publishedAt, // GitHub release date or updated_on as fallback
+            html_url: project.homepage || `https://release-monitoring.org/project/${project.id}/`,
+            body: null
+        };
+    }
+
+    async checkProject(projectName) {
+        const project = await this.searchProject(projectName);
+        return project !== null;
+    }
+};
+
 
 // ============================================================================
 // ReleaseMonitorIndicator - Status bar indicator
@@ -425,7 +650,14 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(emptyItem);
         } else {
             projects.forEach(project => {
-                console.log(`_buildMenu: Project ${project.owner}/${project.repo}, lastRelease: ${project.lastRelease ? project.lastRelease.tag_name : 'null'}`);
+                const source = project.source || 'github';
+                const identifier = source === 'release-monitoring' 
+                    ? (project.projectName || project.owner || 'unknown')
+                    : `${project.owner}/${project.repo}`;
+                const releaseVersion = project.lastRelease 
+                    ? (project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name || 'unknown')
+                    : 'null';
+                console.log(`_buildMenu: Project ${identifier} (${source}), lastRelease: ${releaseVersion}`);
                 this._addProjectItem(project);
             });
         }
@@ -436,15 +668,20 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         const box = new St.BoxLayout({ vertical: false, style: 'spacing: 10px;' });
         
         const textBox = new St.BoxLayout({ vertical: true });
+        const source = project.source || 'github';
+        const displayName = source === 'release-monitoring'
+            ? (project.projectName || project.owner || 'unknown')
+            : `${project.owner}/${project.repo}`;
         const nameLabel = new St.Label({
-            text: `${project.owner}/${project.repo}`,
+            text: displayName + (source === 'release-monitoring' ? ' (release-monitoring.org)' : ''),
             style_class: 'popup-menu-item-label'
         });
         textBox.add_child(nameLabel);
         
         let releaseText = 'No releases found';
         if (project.lastRelease) {
-            releaseText = `Latest: ${project.lastRelease.name} (${project.lastRelease.tag_name})`;
+            const releaseVersion = project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name || 'unknown';
+            releaseText = `Latest: ${project.lastRelease.name || releaseVersion} (${releaseVersion})`;
         }
         const releaseLabel = new St.Label({
             text: releaseText,
@@ -460,7 +697,15 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             child: new St.Icon({ icon_name: 'edit-delete-symbolic', icon_size: 16 })
         });
         removeButton.connect('clicked', () => {
-            this._extension.configManager.removeProject(project.owner, project.repo);
+            if (source === 'release-monitoring') {
+                this._extension.configManager.removeProject(
+                    project.projectName || project.owner,
+                    null,
+                    source
+                );
+            } else {
+                this._extension.configManager.removeProject(project.owner, project.repo, source);
+            }
             this._buildMenu(); // Refresh menu
         });
         box.add_child(removeButton);
@@ -635,17 +880,29 @@ export default class ReleaseMonitorExtension extends Extension {
         this.metadata = metadata; // Store metadata for access in indicator
         this.configManager = null;
         this.githubAPI = null;
+        this.releaseMonitoringAPI = null;
         this.indicator = null;
         this.checkInterval = null;
         this.settings = null;
         this._settingsChangedId = null;
         this._wasInStatusArea = false; // Track if indicator was ever added via addToStatusArea
         this._settingsWatchId = null; // File watcher for settings signal
+        this._settingsUpdateWatchId = null; // File watcher for settings updates
+        this._settingsWindowProcessId = null; // Track settings window process
     }
 
     enable() {
         this.configManager = new ConfigManager();
         this.githubAPI = new GitHubAPI();
+        
+        // Get API token from settings
+        let apiToken = null;
+        try {
+            apiToken = this.getSettings().get_string('release-monitoring-api-token') || null;
+        } catch (e) {
+            console.log(`Could not read release-monitoring-api-token: ${e.message}`);
+        }
+        this.releaseMonitoringAPI = new ReleaseMonitoringAPI(apiToken);
         this.settings = this.getSettings();
         
         this.indicator = new ReleaseMonitorIndicator();
@@ -662,15 +919,11 @@ export default class ReleaseMonitorExtension extends Extension {
         // Watch for settings signal file from report window
         this._startSettingsWatcher();
         
-        // Check for updates every 30 minutes
-        this.checkInterval = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            1800, // 30 minutes
-            () => {
-                this.checkForUpdates();
-                return true; // Continue the timeout
-            }
-        );
+        // Watch for settings updates from settings window
+        this._startSettingsUpdateWatcher();
+        
+        // Start check interval based on settings
+        this._restartCheckInterval();
         
         // Initial check after 5 seconds
         GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
@@ -848,9 +1101,9 @@ export default class ReleaseMonitorExtension extends Extension {
             () => {
                 try {
                     if (signalFile.query_exists(null)) {
-                        // Signal file exists - open preferences
-                        console.log('Settings signal file detected, opening preferences...');
-                        this._openPreferences();
+                        // Signal file exists - open settings window
+                        console.log('Settings signal file detected, opening settings window...');
+                        this._openSettingsWindow();
                         // Delete the signal file
                         try {
                             signalFile.delete(null);
@@ -866,37 +1119,184 @@ export default class ReleaseMonitorExtension extends Extension {
         );
     }
     
-    _openPreferences() {
-        // Open the Extensions app to the preferences for this extension
-        try {
-            const extensionUuid = this.metadata.uuid;
-            console.log(`_openPreferences: Opening preferences for ${extensionUuid}`);
-            
-            // Use GLib.spawn_command_line_async to launch the command
-            const command = `gnome-extensions prefs ${extensionUuid}`;
-            console.log(`_openPreferences: Executing: ${command}`);
-            
-            try {
-                GLib.spawn_command_line_async(command);
-                console.log(`_openPreferences: Command executed successfully`);
+    _openSettingsWindow() {
+        // Check if settings window is already open
+        if (this._settingsWindowProcessId) {
+            // Check if the process is still running
+            const procPath = `/proc/${this._settingsWindowProcessId}`;
+            const procFile = Gio.File.new_for_path(procPath);
+            if (procFile.query_exists(null)) {
+                console.log('_openSettingsWindow: Settings window already open, skipping');
                 return;
-            } catch (spawnError) {
-                console.error(`_openPreferences: spawn_command_line_async failed: ${spawnError.message}`);
+            } else {
+                // Process doesn't exist, clear the ID and continue
+                console.log('_openSettingsWindow: Previous settings window process no longer exists, clearing ID');
+                this._settingsWindowProcessId = null;
             }
-        } catch (e) {
-            console.error(`_openPreferences: Error: ${e.message}`);
         }
         
-        // Fallback: try to open Extensions app directly
+        // Get the extension directory path
+        const extensionDir = this.path;
+        const settingsWindowScript = GLib.build_filenamev([extensionDir, 'settings-window.js']);
+        
+        // Launch the settings window script
         try {
-            console.log(`_openPreferences: Trying fallback - opening Extensions app`);
-            GLib.spawn_command_line_async('gnome-extensions');
+            const scriptFile = Gio.File.new_for_path(settingsWindowScript);
+            if (!scriptFile.query_exists(null)) {
+                throw new Error(`Settings window script not found: ${settingsWindowScript}`);
+            }
+            
+            // Get current settings to pass to the window
+            const currentInterval = this.settings.get_int('refresh-interval');
+            let currentPosition = 'right';
+            try {
+                currentPosition = this.settings.get_string('icon-position') || 'right';
+            } catch (e) {
+                console.log(`Could not read icon-position: ${e.message}`);
+            }
+            
+            let currentApiToken = '';
+            try {
+                currentApiToken = this.settings.get_string('release-monitoring-api-token') || '';
+            } catch (e) {
+                console.log(`Could not read release-monitoring-api-token: ${e.message}`);
+            }
+            
+            console.log(`_openSettingsWindow: Launching ${settingsWindowScript} with interval=${currentInterval}, position=${currentPosition}, apiToken=${currentApiToken ? '***' : '(empty)'}`);
+            
+            const [success, pid] = GLib.spawn_async(
+                null,
+                ['gjs', '-m', settingsWindowScript, extensionDir, this.metadata.version || '1', currentInterval.toString(), currentPosition, currentApiToken],
+                null,
+                GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                null
+            );
+            
+            if (!success) {
+                throw new Error('Failed to launch settings window script');
+            }
+            
+            // Track the process ID to prevent multiple windows
+            this._settingsWindowProcessId = pid;
+            console.log(`_openSettingsWindow: Process launched with PID ${pid}`);
+            
+            // Monitor process to clear the ID when it exits
+            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, status) => {
+                console.log(`_openSettingsWindow: Process ${pid} exited with status ${status}`);
+                this._settingsWindowProcessId = null;
+                GLib.spawn_close_pid(pid);
+                return GLib.SOURCE_REMOVE;
+            });
         } catch (e) {
-            console.error(`_openPreferences: Fallback failed: ${e.message}`);
+            console.error(`Error launching settings window: ${e.message}`);
+            console.error(`Stack trace: ${e.stack}`);
+            Main.notify('Error', `Failed to open settings window: ${e.message}`);
         }
+    }
+    
+    _startSettingsUpdateWatcher() {
+        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-update-settings');
+        
+        // Check for settings update signal file periodically
+        this._settingsUpdateWatchId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            1, // Check every second
+            () => {
+                try {
+                    if (signalFile.query_exists(null)) {
+                        // Signal file exists - read and apply settings
+                        console.log('Settings update signal file detected, reading settings...');
+                        this._applySettingsUpdate();
+                        // Delete the signal file
+                        try {
+                            signalFile.delete(null);
+                        } catch (e) {
+                            console.log(`Could not delete signal file: ${e.message}`);
+                        }
+                    }
+                } catch (e) {
+                    console.log(`Error checking settings update signal file: ${e.message}`);
+                }
+                return true; // Continue watching
+            }
+        );
+    }
+    
+    _applySettingsUpdate() {
+        // Read settings from JSON file
+        const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
+        try {
+            if (settingsFile.query_exists(null)) {
+                const [success, contents] = settingsFile.load_contents(null);
+                if (success) {
+                    const decoder = new TextDecoder('utf-8');
+                    const jsonData = decoder.decode(contents);
+                    const settingsData = JSON.parse(jsonData);
+                    
+                    console.log(`_applySettingsUpdate: Applying settings: ${JSON.stringify(settingsData)}`);
+                    
+                    // Update icon position
+                    if (settingsData.iconPosition) {
+                        this.settings.set_string('icon-position', settingsData.iconPosition);
+                        console.log(`_applySettingsUpdate: Icon position set to ${settingsData.iconPosition}`);
+                    }
+                    
+                    // Update refresh interval
+                    if (settingsData.refreshInterval) {
+                        this.settings.set_int('refresh-interval', settingsData.refreshInterval);
+                        console.log(`_applySettingsUpdate: Refresh interval set to ${settingsData.refreshInterval} seconds`);
+                        // Restart the check interval with new value
+                        this._restartCheckInterval();
+                    }
+                    
+                    // Update API token and recreate ReleaseMonitoringAPI
+                    if (settingsData.apiToken !== undefined) {
+                        this.settings.set_string('release-monitoring-api-token', settingsData.apiToken || '');
+                        console.log(`_applySettingsUpdate: API token ${settingsData.apiToken ? 'updated' : 'cleared'}`);
+                        // Recreate the API instance with the new token
+                        this.releaseMonitoringAPI = new ReleaseMonitoringAPI(settingsData.apiToken || null);
+                    }
+                    
+                    // Delete the settings file
+                    try {
+                        settingsFile.delete(null);
+                    } catch (e) {
+                        console.log(`Could not delete settings file: ${e.message}`);
+                    }
+                }
+            }
+        } catch (e) {
+            console.error(`Error applying settings update: ${e.message}`);
+        }
+    }
+    
+    _restartCheckInterval() {
+        // Remove old interval
+        if (this.checkInterval) {
+            GLib.source_remove(this.checkInterval);
+            this.checkInterval = null;
+        }
+        
+        // Get new interval from settings
+        const interval = this.settings.get_int('refresh-interval');
+        console.log(`_restartCheckInterval: Starting check interval with ${interval} seconds`);
+        
+        // Start new interval
+        this.checkInterval = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            interval,
+            () => {
+                this.checkForUpdates();
+                return true; // Continue the timeout
+            }
+        );
     }
 
     disable() {
+        if (this._settingsUpdateWatchId) {
+            GLib.source_remove(this._settingsUpdateWatchId);
+            this._settingsUpdateWatchId = null;
+        }
         if (this._settingsWatchId) {
             GLib.source_remove(this._settingsWatchId);
             this._settingsWatchId = null;
@@ -922,35 +1322,71 @@ export default class ReleaseMonitorExtension extends Extension {
         
         const checkPromises = projects.map(async (project) => {
             try {
+                const source = project.source || 'github'; // Default to github for backward compatibility
                 const versionFilter = project.versionFilter || null;
-                console.log(`checkForUpdates: Checking ${project.owner}/${project.repo}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
-                const release = await this.githubAPI.getLatestRelease(project.owner, project.repo, versionFilter);
+                
+                let release = null;
+                let projectIdentifier = '';
+                
+                if (source === 'release-monitoring') {
+                    const projectName = project.projectName || project.owner; // Fallback to owner for compatibility
+                    projectIdentifier = projectName;
+                    console.log(`checkForUpdates: Checking release-monitoring.org project "${projectName}"${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                    release = await this.releaseMonitoringAPI.getLatestRelease(projectName, versionFilter);
+                } else {
+                    // GitHub
+                    projectIdentifier = `${project.owner}/${project.repo}`;
+                    console.log(`checkForUpdates: Checking GitHub ${projectIdentifier}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                    release = await this.githubAPI.getLatestRelease(project.owner, project.repo, versionFilter);
+                }
                 
                 if (release) {
-                    console.log(`checkForUpdates: Found release ${release.tag_name} for ${project.owner}/${project.repo}`);
-                    const releaseDate = new Date(release.published_at);
-                    const lastReleaseDate = project.lastRelease 
-                        ? new Date(project.lastRelease.published_at) 
-                        : null;
+                    const releaseVersion = release.tag_name || release.version || release.name;
+                    console.log(`checkForUpdates: Found release ${releaseVersion} for ${projectIdentifier}`);
+                    
+                    // For release-monitoring.org, published_at may be null, so we compare versions instead
+                    const isNewRelease = source === 'release-monitoring' 
+                        ? (!project.lastRelease || (project.lastRelease.version || project.lastRelease.tag_name) !== releaseVersion)
+                        : (() => {
+                            const releaseDate = release.published_at ? new Date(release.published_at) : null;
+                            const lastReleaseDate = project.lastRelease && project.lastRelease.published_at
+                                ? new Date(project.lastRelease.published_at)
+                                : null;
+                            return !lastReleaseDate || (releaseDate && releaseDate > lastReleaseDate);
+                        })();
                     
                     // Always update the config with the latest release info
-                    console.log(`checkForUpdates: Calling updateProjectRelease for ${project.owner}/${project.repo}`);
-                    this.configManager.updateProjectRelease(
-                        project.owner,
-                        project.repo,
-                        release
-                    );
-                    console.log(`checkForUpdates: updateProjectRelease completed for ${project.owner}/${project.repo}`);
+                    console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier}`);
+                    if (source === 'release-monitoring') {
+                        this.configManager.updateProjectRelease(
+                            null, // owner not used for release-monitoring
+                            null, // repo not used for release-monitoring
+                            release,
+                            source,
+                            project.projectName || project.owner
+                        );
+                    } else {
+                        this.configManager.updateProjectRelease(
+                            project.owner,
+                            project.repo,
+                            release,
+                            source
+                        );
+                    }
+                    console.log(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);
                     
                     // Check if this is a new release
-                    if (!lastReleaseDate || releaseDate > lastReleaseDate) {
+                    if (isNewRelease) {
                         hasNewReleases = true;
                         
                         // Show notification
+                        const displayName = source === 'release-monitoring' 
+                            ? projectIdentifier 
+                            : projectIdentifier;
                         this.showNotification(
-                            `New release: ${project.owner}/${project.repo}`,
-                            `${release.name} (${release.tag_name})`,
-                            release.html_url
+                            `New release: ${displayName}`,
+                            `${release.name || releaseVersion} (${releaseVersion})`,
+                            release.html_url || `https://release-monitoring.org/project/?name=${encodeURIComponent(projectIdentifier)}`
                         );
                     }
                     
@@ -964,11 +1400,14 @@ export default class ReleaseMonitorExtension extends Extension {
                         return false; // Don't repeat
                     });
                 } else {
-                    console.log(`checkForUpdates: No releases found for ${project.owner}/${project.repo}`);
+                    console.log(`checkForUpdates: No releases found for ${projectIdentifier}`);
                 }
             } catch (e) {
-                console.error(`Error checking ${project.owner}/${project.repo}: ${e.message}`);
-                log(`Error checking ${project.owner}/${project.repo}: ${e}`);
+                const projectIdentifier = project.source === 'release-monitoring' 
+                    ? (project.projectName || project.owner || 'unknown')
+                    : `${project.owner}/${project.repo}`;
+                console.error(`Error checking ${projectIdentifier}: ${e.message}`);
+                log(`Error checking ${projectIdentifier}: ${e}`);
             }
         });
         

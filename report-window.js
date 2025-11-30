@@ -124,44 +124,15 @@ app.connect('startup', () => {
         margin_bottom: 20
     });
     
-    // Create a horizontal box for title and Add Project button
-    const titleRow = new Gtk.Box({
-        orientation: Gtk.Orientation.HORIZONTAL,
-        spacing: 10,
-        halign: Gtk.Align.FILL
-    });
-    
+    // Title label in the main content area
     const reportTitleLabel = new Gtk.Label({
         label: '<b>Release Monitor - Project Report</b>',
         use_markup: true,
-        halign: Gtk.Align.START,
-        hexpand: true
+        halign: Gtk.Align.START
     });
     reportTitleLabel.set_visible(true);
-    titleRow.append(reportTitleLabel);
-    
-    // Add Project button in the main content area
-    const addProjectButton = new Gtk.Button({
-        label: 'Add Project',
-        tooltip_text: 'Add a new project to monitor'
-    });
-    addProjectButton.connect('clicked', () => {
-        console.log('Add Project button clicked from report window');
-        try {
-            GLib.spawn_command_line_async('gnome-extensions prefs release-monitor@atomicrocketturtle.com');
-        } catch (e) {
-            console.log(`Could not open Extensions app: ${e.message}`);
-            try {
-                GLib.spawn_command_line_async('gnome-extensions');
-            } catch (e2) {
-                console.log(`Could not open Extensions app (fallback): ${e2.message}`);
-            }
-        }
-    });
-    titleRow.append(addProjectButton);
-    
-    mainBox.append(titleRow);
-    console.log('Title row with Add Project button added to mainBox');
+    mainBox.append(reportTitleLabel);
+    console.log('Title label added to mainBox');
     
     if (projects.length === 0) {
         const emptyLabel = new Gtk.Label({
@@ -206,11 +177,19 @@ app.connect('startup', () => {
                 sortedProjects = [...projects].sort((a, b) => {
                     let aVal, bVal;
                     if (column === 'project') {
-                        aVal = (a.owner + '/' + a.repo).toLowerCase();
-                        bVal = (b.owner + '/' + b.repo).toLowerCase();
+                        const aSource = a.source || 'github';
+                        const aName = aSource === 'release-monitoring'
+                            ? (a.projectName || a.owner || 'unknown')
+                            : (a.owner + '/' + a.repo);
+                        const bSource = b.source || 'github';
+                        const bName = bSource === 'release-monitoring'
+                            ? (b.projectName || b.owner || 'unknown')
+                            : (b.owner + '/' + b.repo);
+                        aVal = aName.toLowerCase();
+                        bVal = bName.toLowerCase();
                     } else if (column === 'release') {
-                        aVal = a.lastRelease ? (a.lastRelease.name || a.lastRelease.tag_name || '').toLowerCase() : 'zzz';
-                        bVal = b.lastRelease ? (b.lastRelease.name || b.lastRelease.tag_name || '').toLowerCase() : 'zzz';
+                        aVal = a.lastRelease ? (a.lastRelease.name || a.lastRelease.tag_name || a.lastRelease.version || '').toLowerCase() : 'zzz';
+                        bVal = b.lastRelease ? (b.lastRelease.name || b.lastRelease.tag_name || b.lastRelease.version || '').toLowerCase() : 'zzz';
                     } else if (column === 'date') {
                         aVal = a.lastRelease && a.lastRelease.published_at ? new Date(a.lastRelease.published_at).getTime() : 0;
                         bVal = b.lastRelease && b.lastRelease.published_at ? new Date(b.lastRelease.published_at).getTime() : 0;
@@ -229,8 +208,13 @@ app.connect('startup', () => {
                     margin_bottom: 3
                 });
                 
+                const source = project.source || 'github';
+                const displayName = source === 'release-monitoring'
+                    ? (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)'
+                    : (project.owner + '/' + project.repo);
+                
                 const nameLabel = new Gtk.Label({
-                    label: project.owner + '/' + project.repo,
+                    label: displayName,
                     halign: Gtk.Align.START,
                     xalign: 0,
                     hexpand: true,
@@ -251,7 +235,7 @@ app.connect('startup', () => {
                 
                 let releaseText = 'No releases found';
                 if (project.lastRelease) {
-                    releaseText = project.lastRelease.name || project.lastRelease.tag_name;
+                    releaseText = project.lastRelease.name || project.lastRelease.tag_name || project.lastRelease.version || 'unknown';
                 }
                 const releaseLabel = new Gtk.Label({
                     label: releaseText,
@@ -387,6 +371,26 @@ app.connect('startup', () => {
         }
     });
     headerBar.pack_start(settingsButton);
+    
+    // Add Project button to header bar (right side, before window controls)
+    const addProjectButton = new Gtk.Button({
+        label: 'Add Project',
+        tooltip_text: 'Add a new project to monitor'
+    });
+    addProjectButton.connect('clicked', () => {
+        console.log('Add Project button clicked from report window');
+        try {
+            GLib.spawn_command_line_async('gnome-extensions prefs release-monitor@atomicrocketturtle.com');
+        } catch (e) {
+            console.log(`Could not open Extensions app: ${e.message}`);
+            try {
+                GLib.spawn_command_line_async('gnome-extensions');
+            } catch (e2) {
+                console.log(`Could not open Extensions app (fallback): ${e2.message}`);
+            }
+        }
+    });
+    headerBar.pack_end(addProjectButton);
     
     // For Adw.ApplicationWindow, we add header bar to content, not use set_titlebar()
     // Create a main container that includes both header bar and content
