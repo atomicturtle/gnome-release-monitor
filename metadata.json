@@ -2,7 +2,7 @@
   "uuid": "release-monitor@atomicrocketturtle.com",
   "name": "Release Monitor",
   "description": "Monitor GitHub and release-monitoring.org projects for new releases and get notified",
-  "version": "1.0.12",
+  "version": "1.0.14",
   "shell-version": ["45", "46", "47", "48", "49"],
   "url": "https://github.com/atomicturtle/gnome-release-monitor",
   "settings-schema": "org.gnome.shell.extensions.release-monitor"

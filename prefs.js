@@ -72,27 +72,42 @@ const ConfigManager = class {
         return project;
     }
     
-    updateProjectVersionFilter(owner, repo, versionFilter) {
+    updateProjectVersionFilter(owner, repo, newVersionFilter, source = 'github', currentVersionFilter = null) {
+        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
+        const normalizedCurrentFilter = (currentVersionFilter === null || currentVersionFilter === undefined || currentVersionFilter === '') ? null : currentVersionFilter;
+        
         const project = this.projects.find(
-            p => (p.source === 'github' && p.owner === owner && p.repo === repo) ||
-                 (p.source === 'release-monitoring' && p.projectName === owner)
+            p => {
+                if (source === 'release-monitoring') {
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedCurrentFilter;
+                } else {
+                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedCurrentFilter;
+                }
+            }
         );
         if (project) {
-            project.versionFilter = versionFilter || null;
+            project.versionFilter = newVersionFilter || null;
             this.save();
         }
     }
 
-    removeProject(owner, repo, source = 'github') {
-        console.log(`removeProject: Removing project owner=${owner}, repo=${repo}, source=${source}`);
+    removeProject(owner, repo, source = 'github', versionFilter = null) {
+        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
+        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
+        
+        console.log(`removeProject: Removing project owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
         const beforeCount = this.projects.length;
         
         if (source === 'release-monitoring') {
             this.projects = this.projects.filter(
                 p => {
-                    const matches = p.source === 'release-monitoring' && p.projectName === owner;
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    const matches = p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedFilter;
                     if (matches) {
-                        console.log(`removeProject: Filtering out release-monitoring project: ${p.projectName}`);
+                        console.log(`removeProject: Filtering out release-monitoring project: ${p.projectName} (filter: ${pFilter})`);
                     }
                     return !matches;
                 }
@@ -103,9 +118,10 @@ const ConfigManager = class {
             this.projects = this.projects.filter(
                 p => {
                     const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const matches = isGitHub && p.owner === owner && p.repo === repo;
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    const matches = isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
                     if (matches) {
-                        console.log(`removeProject: Filtering out GitHub project: ${p.owner}/${p.repo} (source was: ${p.source})`);
+                        console.log(`removeProject: Filtering out GitHub project: ${p.owner}/${p.repo} (source was: ${p.source}, filter: ${pFilter})`);
                     }
                     return !matches;
                 }
@@ -115,20 +131,52 @@ const ConfigManager = class {
         const afterCount = this.projects.length;
         console.log(`removeProject: Project count changed from ${beforeCount} to ${afterCount}`);
         if (beforeCount === afterCount) {
-            console.error(`removeProject: WARNING - Project was not removed! Check if project exists with owner=${owner}, repo=${repo}, source=${source}`);
+            console.error(`removeProject: WARNING - Project was not removed! Check if project exists with owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
         }
         this.save();
         console.log(`removeProject: Config saved after removal`);
     }
 
-    updateProjectRelease(owner, repo, release) {
-        const project = this.projects.find(
-            p => p.owner === owner && p.repo === repo
-        );
+    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null) {
+        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
+        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
+        
+        let project;
+        if (source === 'release-monitoring') {
+            project = this.projects.find(
+                p => {
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
+                }
+            );
+        } else {
+            // For GitHub projects, also handle projects without source field (backward compatibility)
+            project = this.projects.find(
+                p => {
+                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
+                }
+            );
+        }
         if (project) {
-            project.lastRelease = release;
+            // Ensure the release object has all necessary fields
+            const releaseToSave = {
+                tag_name: release.tag_name || release.version || release.name,
+                version: release.version || release.tag_name || release.name,
+                name: release.name || release.tag_name || release.version,
+                published_at: release.published_at || null,
+                html_url: release.html_url || null,
+                body: release.body || null
+            };
+            project.lastRelease = releaseToSave;
             project.lastChecked = new Date().toISOString();
+            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
+            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter})`);
             this.save();
+        } else {
+            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
+            console.error(`updateProjectRelease: WARNING - Project not found! ${identifier} (source: ${source}, filter: ${normalizedFilter})`);
         }
     }
 
@@ -815,19 +863,21 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         removeButton.connect('clicked', () => {
             // Determine the actual source (handle null/undefined for backward compatibility)
             const actualSource = source || project.source || 'github';
-            console.log(`Remove button clicked for project: ${displayName}, source: ${actualSource}`);
+            const versionFilter = project.versionFilter || null;
+            console.log(`Remove button clicked for project: ${displayName}, source: ${actualSource}, versionFilter: ${versionFilter}`);
             
             if (actualSource === 'release-monitoring') {
                 const projectName = project.projectName || project.owner;
-                console.log(`Removing release-monitoring project: ${projectName}`);
+                console.log(`Removing release-monitoring project: ${projectName} (filter: ${versionFilter})`);
                 group._configManager.removeProject(
                     projectName,
                     null,
-                    actualSource
+                    actualSource,
+                    versionFilter
                 );
             } else {
-                console.log(`Removing GitHub project: ${project.owner}/${project.repo}`);
-                group._configManager.removeProject(project.owner, project.repo, actualSource);
+                console.log(`Removing GitHub project: ${project.owner}/${project.repo} (filter: ${versionFilter})`);
+                group._configManager.removeProject(project.owner, project.repo, actualSource, versionFilter);
             }
             // Reload the config to ensure we have the latest data
             group._configManager.load();
@@ -893,15 +943,24 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         
         dialog.connect('response', (dialog, response) => {
             if (response === Gtk.ResponseType.OK) {
-                const versionFilter = versionFilterEntry.get_text().trim() || null;
+                const newVersionFilter = versionFilterEntry.get_text().trim() || null;
+                const currentVersionFilter = project.versionFilter || null;
                 if (source === 'release-monitoring') {
                     configManager.updateProjectVersionFilter(
                         project.projectName || project.owner,
                         null,
-                        versionFilter
+                        newVersionFilter,
+                        source,
+                        currentVersionFilter
                     );
                 } else {
-                    configManager.updateProjectVersionFilter(project.owner, project.repo, versionFilter);
+                    configManager.updateProjectVersionFilter(
+                        project.owner,
+                        project.repo,
+                        newVersionFilter,
+                        source,
+                        currentVersionFilter
+                    );
                 }
                 this._loadProjects(group);
             }
@@ -1045,7 +1104,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                                 const release = await releaseMonitoringAPI.getLatestRelease(projectName, versionFilter, githubAPI);
                                 if (release) {
                                     console.log(`Found release: ${release.version || release.tag_name}`);
-                                    configManager.updateProjectRelease(null, null, release, source, projectName);
+                                    configManager.updateProjectRelease(null, null, release, source, projectName, versionFilter);
                                     this._loadProjects(group);
                                 } else {
                                     console.log(`No releases found for: ${projectName}`);
@@ -1133,7 +1192,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                                     const release = await githubAPI.getLatestRelease(owner, repo, versionFilter);
                                     if (release) {
                                         console.log(`Found release: ${release.tag_name}`);
-                                        configManager.updateProjectRelease(owner, repo, release, source);
+                                        configManager.updateProjectRelease(owner, repo, release, source, null, versionFilter);
                                         this._loadProjects(group);
                                     } else {
                                         console.log(`No releases found for: ${owner}/${repo}`);

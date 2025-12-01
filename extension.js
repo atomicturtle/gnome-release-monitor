@@ -81,39 +81,72 @@ const ConfigManager = class {
         return project;
     }
     
-    updateProjectVersionFilter(owner, repo, versionFilter) {
+    updateProjectVersionFilter(owner, repo, newVersionFilter, source = 'github', currentVersionFilter = null) {
+        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
+        const normalizedCurrentFilter = (currentVersionFilter === null || currentVersionFilter === undefined || currentVersionFilter === '') ? null : currentVersionFilter;
+        
         const project = this.projects.find(
-            p => (p.source === 'github' && p.owner === owner && p.repo === repo) ||
-                 (p.source === 'release-monitoring' && p.projectName === owner)
+            p => {
+                if (source === 'release-monitoring') {
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedCurrentFilter;
+                } else {
+                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedCurrentFilter;
+                }
+            }
         );
         if (project) {
-            project.versionFilter = versionFilter || null;
+            project.versionFilter = newVersionFilter || null;
             this.save();
         }
     }
 
-    removeProject(owner, repo, source = 'github') {
+    removeProject(owner, repo, source = 'github', versionFilter = null) {
+        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
+        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
+        
         if (source === 'release-monitoring') {
             this.projects = this.projects.filter(
-                p => !(p.source === 'release-monitoring' && p.projectName === owner)
+                p => {
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return !(p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedFilter);
+                }
             );
         } else {
+            // For GitHub projects, also handle projects without source field (backward compatibility)
             this.projects = this.projects.filter(
-                p => !(p.source === 'github' && p.owner === owner && p.repo === repo)
+                p => {
+                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return !(isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter);
+                }
             );
         }
         this.save();
     }
 
-    updateProjectRelease(owner, repo, release, source = 'github', projectName = null) {
+    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null) {
+        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
+        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
+        
         let project;
         if (source === 'release-monitoring') {
             project = this.projects.find(
-                p => p.source === 'release-monitoring' && p.projectName === projectName
+                p => {
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
+                }
             );
         } else {
+            // For GitHub projects, also handle projects without source field (backward compatibility)
             project = this.projects.find(
-                p => p.source === 'github' && p.owner === owner && p.repo === repo
+                p => {
+                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
+                }
             );
         }
         if (project) {
@@ -129,25 +162,32 @@ const ConfigManager = class {
             project.lastRelease = releaseToSave;
             project.lastChecked = new Date().toISOString();
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier}`);
+            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter})`);
             this.save();
             console.log(`updateProjectRelease: Config saved, reloading...`);
             this.load(); // Reload to ensure consistency
             // Verify after reload
             const verifyProject = this.projects.find(
-                source === 'release-monitoring'
-                    ? (p => p.source === 'release-monitoring' && p.projectName === projectName)
-                    : (p => p.source === 'github' && p.owner === owner && p.repo === repo)
+                p => {
+                    if (source === 'release-monitoring') {
+                        const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                        return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
+                    } else {
+                        const isGitHub = (p.source === 'github' || !p.source || p.source === null);
+                        const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                        return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
+                    }
+                }
             );
             if (verifyProject && verifyProject.lastRelease) {
                 const savedVersion = verifyProject.lastRelease.tag_name || verifyProject.lastRelease.version;
-                console.log(`updateProjectRelease: Verified saved version is ${savedVersion} for ${identifier}`);
+                console.log(`updateProjectRelease: Verified saved version is ${savedVersion} for ${identifier} (filter: ${normalizedFilter})`);
             } else {
-                console.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier}`);
+                console.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier} (filter: ${normalizedFilter})`);
             }
         } else {
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.error(`updateProjectRelease: Project ${identifier} not found in config`);
+            console.error(`updateProjectRelease: Project ${identifier} not found in config (source: ${source}, filter: ${normalizedFilter})`);
         }
     }
 
@@ -801,6 +841,19 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
                 this._addProjectItem(project);
             });
         }
+        
+        // Separator before action items
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        
+        // Settings menu item
+        const settingsItem = new PopupMenu.PopupMenuItem('Settings');
+        settingsItem.connect('activate', () => {
+            this.menu.close();
+            if (this._extension) {
+                this._extension._openSettingsWindow();
+            }
+        });
+        this.menu.addMenuItem(settingsItem);
     }
     
     _addProjectItem(project) {
@@ -1513,20 +1566,24 @@ export default class ReleaseMonitorExtension extends Extension {
                     // Always update the config with the latest release info
                     console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}`);
                     try {
+                        const versionFilter = project.versionFilter || null;
                         if (source === 'release-monitoring') {
                             this.configManager.updateProjectRelease(
                                 null, // owner not used for release-monitoring
                                 null, // repo not used for release-monitoring
                                 release,
                                 source,
-                                project.projectName || project.owner
+                                project.projectName || project.owner,
+                                versionFilter
                             );
                         } else {
                             this.configManager.updateProjectRelease(
                                 project.owner,
                                 project.repo,
                                 release,
-                                source
+                                source,
+                                null, // projectName not used for GitHub
+                                versionFilter
                             );
                         }
                         console.log(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);
