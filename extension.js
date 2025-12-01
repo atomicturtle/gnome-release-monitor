@@ -11,192 +11,7 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as MessageTray from "resource:///org/gnome/shell/ui/messageTray.js";
-
-// ============================================================================
-// ConfigManager - Manages project configuration storage
-// ============================================================================
-const ConfigManager = class {
-    constructor() {
-        this.configDir = GLib.get_user_config_dir();
-        this.configFile = Gio.File.new_for_path(
-            GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json'])
-        );
-        this.projects = [];
-        this._ensureConfigDir();
-        this.load();
-    }
-
-    _ensureConfigDir() {
-        const configDirFile = this.configFile.get_parent();
-        if (!configDirFile.query_exists(null)) {
-            configDirFile.make_directory_with_parents(null);
-        }
-    }
-
-    load() {
-        try {
-            if (this.configFile.query_exists(null)) {
-                const [success, contents] = this.configFile.load_contents(null);
-                if (success) {
-                    const decoder = new TextDecoder('utf-8');
-                    const jsonStr = decoder.decode(contents);
-                    this.projects = JSON.parse(jsonStr);
-                }
-            }
-        } catch (e) {
-            log(`Error loading config: ${e}`);
-            this.projects = [];
-        }
-    }
-
-    save() {
-        try {
-            const encoder = new TextEncoder();
-            const jsonStr = JSON.stringify(this.projects, null, 2);
-            const data = encoder.encode(jsonStr);
-            const [success, etag] = this.configFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
-            if (success) {
-                console.log(`Config saved successfully`);
-            } else {
-                console.error(`Config save failed`);
-            }
-        } catch (e) {
-            console.error(`Error saving config: ${e.message}`);
-            log(`Error saving config: ${e}`);
-        }
-    }
-
-    addProject(owner, repo, versionFilter = null, source = 'github', projectName = null) {
-        const project = {
-            source: source || 'github',
-            owner: owner || null,
-            repo: repo || null,
-            projectName: projectName || null, // For release-monitoring.org
-            versionFilter: versionFilter || null,
-            lastRelease: null,
-            lastChecked: null
-        };
-        this.projects.push(project);
-        this.save();
-        return project;
-    }
-    
-    updateProjectVersionFilter(owner, repo, newVersionFilter, source = 'github', currentVersionFilter = null) {
-        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
-        const normalizedCurrentFilter = (currentVersionFilter === null || currentVersionFilter === undefined || currentVersionFilter === '') ? null : currentVersionFilter;
-        
-        const project = this.projects.find(
-            p => {
-                if (source === 'release-monitoring') {
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedCurrentFilter;
-                } else {
-                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedCurrentFilter;
-                }
-            }
-        );
-        if (project) {
-            project.versionFilter = newVersionFilter || null;
-            this.save();
-        }
-    }
-
-    removeProject(owner, repo, source = 'github', versionFilter = null) {
-        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
-        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
-        
-        if (source === 'release-monitoring') {
-            this.projects = this.projects.filter(
-                p => {
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return !(p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedFilter);
-                }
-            );
-        } else {
-            // For GitHub projects, also handle projects without source field (backward compatibility)
-            this.projects = this.projects.filter(
-                p => {
-                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return !(isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter);
-                }
-            );
-        }
-        this.save();
-    }
-
-    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null, isNewRelease = false) {
-        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
-        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
-        
-        let project;
-        if (source === 'release-monitoring') {
-            project = this.projects.find(
-                p => {
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
-                }
-            );
-        } else {
-            // For GitHub projects, also handle projects without source field (backward compatibility)
-            project = this.projects.find(
-                p => {
-                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
-                }
-            );
-        }
-        if (project) {
-            // Ensure the release object has all necessary fields
-            const releaseToSave = {
-                tag_name: release.tag_name || release.version || release.name,
-                version: release.version || release.tag_name || release.name,
-                name: release.name || release.tag_name || release.version,
-                published_at: release.published_at || null,
-                html_url: release.html_url || null,
-                body: release.body || null
-            };
-            project.lastRelease = releaseToSave;
-            project.lastChecked = new Date().toISOString();
-            // Set hasNewRelease flag: true if this is a new release, false otherwise
-            project.hasNewRelease = isNewRelease;
-            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
-            this.save();
-            console.log(`updateProjectRelease: Config saved, reloading...`);
-            this.load(); // Reload to ensure consistency
-            // Verify after reload
-            const verifyProject = this.projects.find(
-                p => {
-                    if (source === 'release-monitoring') {
-                        const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                        return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
-                    } else {
-                        const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                        const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                        return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
-                    }
-                }
-            );
-            if (verifyProject && verifyProject.lastRelease) {
-                const savedVersion = verifyProject.lastRelease.tag_name || verifyProject.lastRelease.version;
-                console.log(`updateProjectRelease: Verified saved version is ${savedVersion} for ${identifier} (filter: ${normalizedFilter})`);
-            } else {
-                console.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier} (filter: ${normalizedFilter})`);
-            }
-        } else {
-            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.error(`updateProjectRelease: Project ${identifier} not found in config (source: ${source}, filter: ${normalizedFilter})`);
-        }
-    }
-
-    getProjects() {
-        return this.projects;
-    }
-};
+import { ConfigManager } from "./configManager.js";
 
 // ============================================================================
 // GitHubAPI - Handles GitHub API interactions
@@ -1116,15 +931,24 @@ export default class ReleaseMonitorExtension extends Extension {
         
         // Add to the appropriate panel area
         // Note: _leftBox and _centerBox are private APIs and may not be available in all GNOME versions
+        // Check for API availability before using
         try {
-            if (position === 'left' && Main.panel._leftBox) {
-                Main.panel._leftBox.insert_child_at_index(this.indicator, -1);
-                console.log('Added indicator to left panel');
-                return;
-            } else if (position === 'center' && Main.panel._centerBox) {
-                Main.panel._centerBox.insert_child_at_index(this.indicator, -1);
-                console.log('Added indicator to center panel');
-                return;
+            if (position === 'left') {
+                if (Main.panel._leftBox) {
+                    Main.panel._leftBox.insert_child_at_index(this.indicator, -1);
+                    console.log('Added indicator to left panel');
+                    return;
+                } else {
+                    console.log('Left panel API (_leftBox) not available, falling back to right');
+                }
+            } else if (position === 'center') {
+                if (Main.panel._centerBox) {
+                    Main.panel._centerBox.insert_child_at_index(this.indicator, -1);
+                    console.log('Added indicator to center panel');
+                    return;
+                } else {
+                    console.log('Center panel API (_centerBox) not available, falling back to right');
+                }
             }
         } catch (e) {
             console.log(`Could not add indicator to ${position} panel: ${e.message}, falling back to right`);
@@ -1477,6 +1301,7 @@ export default class ReleaseMonitorExtension extends Extension {
     }
 
     disable() {
+        // Remove file watchers
         if (this._reloadWatchId) {
             GLib.source_remove(this._reloadWatchId);
             this._reloadWatchId = null;
@@ -1489,18 +1314,66 @@ export default class ReleaseMonitorExtension extends Extension {
             GLib.source_remove(this._settingsWatchId);
             this._settingsWatchId = null;
         }
+        
+        // Disconnect signal handlers
         if (this._settingsChangedId) {
             this.settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = null;
         }
+        
+        // Kill spawned processes
+        if (this._reportWindowProcessId) {
+            try {
+                const procPath = `/proc/${this._reportWindowProcessId}`;
+                const procFile = Gio.File.new_for_path(procPath);
+                if (procFile.query_exists(null)) {
+                    // Process still exists, kill it
+                    GLib.spawn_command_line_async(`kill ${this._reportWindowProcessId}`);
+                    console.log(`Killed report window process ${this._reportWindowProcessId}`);
+                }
+            } catch (e) {
+                console.log(`Error killing report window process: ${e.message}`);
+            }
+            this._reportWindowProcessId = null;
+        }
+        
+        if (this._settingsWindowProcessId) {
+            try {
+                const procPath = `/proc/${this._settingsWindowProcessId}`;
+                const procFile = Gio.File.new_for_path(procPath);
+                if (procFile.query_exists(null)) {
+                    // Process still exists, kill it
+                    GLib.spawn_command_line_async(`kill ${this._settingsWindowProcessId}`);
+                    console.log(`Killed settings window process ${this._settingsWindowProcessId}`);
+                }
+            } catch (e) {
+                console.log(`Error killing settings window process: ${e.message}`);
+            }
+            this._settingsWindowProcessId = null;
+        }
+        
+        // Remove UI elements
         if (this.indicator) {
+            // Remove from panel before destroying
+            const parent = this.indicator.get_parent();
+            if (parent) {
+                parent.remove_child(this.indicator);
+            }
             this.indicator.destroy();
             this.indicator = null;
         }
+        
+        // Cancel intervals
         if (this.checkInterval) {
             GLib.source_remove(this.checkInterval);
             this.checkInterval = null;
         }
+        
+        // Clear references
+        this.configManager = null;
+        this.githubAPI = null;
+        this.releaseMonitoringAPI = null;
+        this.settings = null;
     }
 
     async checkForUpdates() {
