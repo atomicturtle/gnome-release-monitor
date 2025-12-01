@@ -137,7 +137,7 @@ const ConfigManager = class {
         console.log(`removeProject: Config saved after removal`);
     }
 
-    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null) {
+    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null, isNewRelease = false) {
         // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
         const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
         
@@ -171,8 +171,10 @@ const ConfigManager = class {
             };
             project.lastRelease = releaseToSave;
             project.lastChecked = new Date().toISOString();
+            // Set hasNewRelease flag: true if this is a new release, false otherwise
+            project.hasNewRelease = isNewRelease;
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter})`);
+            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
             this.save();
         } else {
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
@@ -1104,7 +1106,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                                 const release = await releaseMonitoringAPI.getLatestRelease(projectName, versionFilter, githubAPI);
                                 if (release) {
                                     console.log(`Found release: ${release.version || release.tag_name}`);
-                                    configManager.updateProjectRelease(null, null, release, source, projectName, versionFilter);
+                                    configManager.updateProjectRelease(null, null, release, source, projectName, versionFilter, false);
                                     this._loadProjects(group);
                                 } else {
                                     console.log(`No releases found for: ${projectName}`);
@@ -1192,7 +1194,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                                     const release = await githubAPI.getLatestRelease(owner, repo, versionFilter);
                                     if (release) {
                                         console.log(`Found release: ${release.tag_name}`);
-                                        configManager.updateProjectRelease(owner, repo, release, source, null, versionFilter);
+                                        configManager.updateProjectRelease(owner, repo, release, source, null, versionFilter, false);
                                         this._loadProjects(group);
                                     } else {
                                         console.log(`No releases found for: ${owner}/${repo}`);

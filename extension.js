@@ -127,7 +127,7 @@ const ConfigManager = class {
         this.save();
     }
 
-    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null) {
+    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null, isNewRelease = false) {
         // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
         const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
         
@@ -161,8 +161,10 @@ const ConfigManager = class {
             };
             project.lastRelease = releaseToSave;
             project.lastChecked = new Date().toISOString();
+            // Set hasNewRelease flag: true if this is a new release, false otherwise
+            project.hasNewRelease = isNewRelease;
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter})`);
+            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
             this.save();
             console.log(`updateProjectRelease: Config saved, reloading...`);
             this.load(); // Reload to ensure consistency
@@ -1564,7 +1566,7 @@ export default class ReleaseMonitorExtension extends Extension {
                         })();
                     
                     // Always update the config with the latest release info
-                    console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}`);
+                    console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}, isNewRelease: ${isNewRelease}`);
                     try {
                         const versionFilter = project.versionFilter || null;
                         if (source === 'release-monitoring') {
@@ -1574,7 +1576,8 @@ export default class ReleaseMonitorExtension extends Extension {
                                 release,
                                 source,
                                 project.projectName || project.owner,
-                                versionFilter
+                                versionFilter,
+                                isNewRelease
                             );
                         } else {
                             this.configManager.updateProjectRelease(
@@ -1583,7 +1586,8 @@ export default class ReleaseMonitorExtension extends Extension {
                                 release,
                                 source,
                                 null, // projectName not used for GitHub
-                                versionFilter
+                                versionFilter,
+                                isNewRelease
                             );
                         }
                         console.log(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);

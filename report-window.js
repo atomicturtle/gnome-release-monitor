@@ -3,6 +3,7 @@
 imports.gi.versions.Gtk = '4.0';
 imports.gi.versions.Adw = '1';
 import Gtk from 'gi://Gtk';
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Adw from 'gi://Adw';
@@ -52,6 +53,20 @@ const loadProjects = () => {
         return false;
     }
     return false;
+};
+
+const saveProjects = () => {
+    try {
+        const encoder = new TextEncoder('utf-8');
+        const jsonData = JSON.stringify(projects, null, 2);
+        const data = encoder.encode(jsonData);
+        projectsFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
+        console.log(`Saved ${projects.length} projects to file`);
+        return true;
+    } catch (e) {
+        console.error(`Error saving projects file: ${e.message}`);
+        return false;
+    }
 };
 
 // Initial load
@@ -236,6 +251,11 @@ app.connect('startup', () => {
                     margin_bottom: 3
                 });
                 
+                // Apply highlighting if this is a new release
+                if (project.hasNewRelease === true) {
+                    row.add_css_class('new-release-row');
+                }
+                
                 const source = project.source || 'github';
                 const displayName = source === 'release-monitoring'
                     ? (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)'
@@ -254,7 +274,35 @@ app.connect('startup', () => {
                     clickableBox.set_child(nameLabel);
                     clickableBox.set_has_frame(false);
                     clickableBox.connect('clicked', () => {
+                        // Open the URL
                         Gio.AppInfo.launch_default_for_uri(project.lastRelease.html_url, null);
+                        
+                        // Clear hasNewRelease flag if it's set
+                        if (project.hasNewRelease === true) {
+                            // Find the project in the projects array and clear the flag
+                            const projectIndex = projects.findIndex(p => {
+                                const pSource = p.source || 'github';
+                                const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
+                                const projectFilter = (project.versionFilter === null || project.versionFilter === undefined || project.versionFilter === '') ? null : project.versionFilter;
+                                
+                                if (pSource === 'release-monitoring' && source === 'release-monitoring') {
+                                    return p.projectName === project.projectName && pFilter === projectFilter;
+                                } else if (pSource === 'github' || !pSource || pSource === null) {
+                                    const isGitHub = (source === 'github' || !source || source === null);
+                                    return isGitHub && p.owner === project.owner && p.repo === project.repo && pFilter === projectFilter;
+                                }
+                                return false;
+                            });
+                            
+                            if (projectIndex !== -1) {
+                                projects[projectIndex].hasNewRelease = false;
+                                saveProjects();
+                                // Reload to get updated data
+                                loadProjects();
+                                // Rebuild table to remove highlighting
+                                rebuildTable(sortColumn, sortAscending);
+                            }
+                        }
                     });
                     row.append(clickableBox);
                 } else {
@@ -535,6 +583,23 @@ app.connect('startup', () => {
     window.connect('notify::has-focus', () => {
         console.log(`Window focus changed: ${window.has_focus()}`);
     });
+    
+    // Create CSS provider for highlighting new releases
+    const cssProvider = new Gtk.CssProvider();
+    const css = `
+        .new-release-row {
+            background-color: rgba(99, 179, 237, 0.2);
+        }
+    `;
+    cssProvider.load_from_data(css, css.length);
+    const display = Gdk.Display.get_default();
+    if (display) {
+        Gtk.StyleContext.add_provider_for_display(
+            display,
+            cssProvider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        );
+    }
     
     // Show and present the window
     window.set_visible(true);
