@@ -519,6 +519,98 @@ export default class ReleaseMonitorExtension extends Extension {
         );
     }
 
+    /**
+     * Safely terminate a process by PID
+     * Tries SIGTERM first for graceful shutdown, then SIGKILL if needed
+     * Uses GLib.spawn_async with argument arrays to avoid shell injection
+     * @param {number} pid - Process ID to terminate
+     * @param {string} processName - Name for logging purposes
+     * @returns {boolean} - True if process was terminated, false otherwise
+     */
+    _terminateProcess(pid, processName = 'process') {
+        if (!pid || pid <= 0) {
+            return false;
+        }
+        
+        try {
+            // Check if process still exists
+            // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
+            const procPath = `/proc/${pid}`;
+            const procFile = Gio.File.new_for_path(procPath);
+            if (!procFile.query_exists(null)) {
+                // Process already exited
+                Logger.debug(`${processName} ${pid} already exited`);
+                return true;
+            }
+            
+            // Try SIGTERM first for graceful termination
+            // Use spawn_async with argument array to avoid shell injection
+            // PID is validated (must be > 0) and comes from our internal tracking
+            Logger.debug(`Sending SIGTERM to ${processName} ${pid}`);
+            const pidStr = pid.toString();
+            try {
+                const [termSuccess, termPid] = GLib.spawn_async(
+                    null,
+                    ['kill', '-TERM', pidStr],
+                    null,
+                    GLib.SpawnFlags.SEARCH_PATH,
+                    null
+                );
+                
+                if (termSuccess) {
+                    // Wait for kill process to complete and check result
+                    GLib.spawn_close_pid(termPid);
+                    // Wait a bit for graceful shutdown (500ms)
+                    GLib.usleep(500_000);
+                    
+                    // Check if process still exists
+                    if (!procFile.query_exists(null)) {
+                        Logger.debug(`${processName} ${pid} terminated gracefully with SIGTERM`);
+                        return true;
+                    }
+                }
+            } catch (termError) {
+                Logger.debug(`SIGTERM failed for ${processName} ${pid}: ${termError.message}`);
+            }
+            
+            // Process still running, use SIGKILL
+            Logger.debug(`Sending SIGKILL to ${processName} ${pid}`);
+            try {
+                const [killSuccess, killPid] = GLib.spawn_async(
+                    null,
+                    ['kill', '-9', pidStr],
+                    null,
+                    GLib.SpawnFlags.SEARCH_PATH,
+                    null
+                );
+                
+                if (killSuccess) {
+                    GLib.spawn_close_pid(killPid);
+                    // Brief wait to ensure kill completes
+                    GLib.usleep(100_000);
+                    
+                    // Verify process was actually killed
+                    if (!procFile.query_exists(null)) {
+                        Logger.debug(`Killed ${processName} ${pid} with SIGKILL`);
+                        return true;
+                    } else {
+                        Logger.warn(`SIGKILL sent to ${processName} ${pid} but process still exists`);
+                        return false;
+                    }
+                } else {
+                    Logger.warn(`Failed to spawn kill command for ${processName} ${pid}`);
+                    return false;
+                }
+            } catch (killError) {
+                Logger.warn(`SIGKILL failed for ${processName} ${pid}: ${killError.message}`);
+                return false;
+            }
+        } catch (e) {
+            Logger.warn(`Error terminating ${processName} ${pid}: ${e.message}`);
+            return false;
+        }
+    }
+
     disable() {
         // Remove signal monitor
         if (this._signalMonitor) {
@@ -537,32 +629,15 @@ export default class ReleaseMonitorExtension extends Extension {
         const reportWindowPid = this.indicator ? this.indicator._reportWindowProcessId : null;
         if (reportWindowPid) {
             try {
-                // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
-                const procPath = `/proc/${reportWindowPid}`;
-                const procFile = Gio.File.new_for_path(procPath);
-                if (procFile.query_exists(null)) {
-                    // Process still exists, kill it synchronously to ensure it completes
-                    // Use kill -9 (SIGKILL) for forceful termination
-                    const [success, , , exitStatus] = GLib.spawn_command_line_sync(
-                        `kill -9 ${reportWindowPid}`
-                    );
-                    if (success && exitStatus === 0) {
-                        Logger.debug(`Killed report window process ${reportWindowPid}`);
-                    } else {
-                        Logger.warn(`Failed to kill report window process ${reportWindowPid}, exit status: ${exitStatus}`);
-                    }
-                    // Close the PID handle
-                    GLib.spawn_close_pid(reportWindowPid);
-                } else {
-                    // Process already exited, just close the PID handle
-                    GLib.spawn_close_pid(reportWindowPid);
-                }
+                this._terminateProcess(reportWindowPid, 'report window');
+                // Close the PID handle
+                GLib.spawn_close_pid(reportWindowPid);
                 // Clear the PID from indicator
                 if (this.indicator) {
                     this.indicator._reportWindowProcessId = null;
                 }
             } catch (e) {
-                Logger.warn(`Error killing report window process: ${e.message}`);
+                Logger.warn(`Error terminating report window process: ${e.message}`);
                 // Try to close PID handle even if kill failed
                 try {
                     GLib.spawn_close_pid(reportWindowPid);
@@ -578,28 +653,11 @@ export default class ReleaseMonitorExtension extends Extension {
         
         if (this._settingsWindowProcessId) {
             try {
-                // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
-                const procPath = `/proc/${this._settingsWindowProcessId}`;
-                const procFile = Gio.File.new_for_path(procPath);
-                if (procFile.query_exists(null)) {
-                    // Process still exists, kill it synchronously to ensure it completes
-                    // Use kill -9 (SIGKILL) for forceful termination
-                    const [success, , , exitStatus] = GLib.spawn_command_line_sync(
-                        `kill -9 ${this._settingsWindowProcessId}`
-                    );
-                    if (success && exitStatus === 0) {
-                        Logger.debug(`Killed settings window process ${this._settingsWindowProcessId}`);
-                    } else {
-                        Logger.warn(`Failed to kill settings window process ${this._settingsWindowProcessId}, exit status: ${exitStatus}`);
-                    }
-                    // Close the PID handle
-                    GLib.spawn_close_pid(this._settingsWindowProcessId);
-                } else {
-                    // Process already exited, just close the PID handle
-                    GLib.spawn_close_pid(this._settingsWindowProcessId);
-                }
+                this._terminateProcess(this._settingsWindowProcessId, 'settings window');
+                // Close the PID handle
+                GLib.spawn_close_pid(this._settingsWindowProcessId);
             } catch (e) {
-                Logger.warn(`Error killing settings window process: ${e.message}`);
+                Logger.warn(`Error terminating settings window process: ${e.message}`);
                 // Try to close PID handle even if kill failed
                 try {
                     GLib.spawn_close_pid(this._settingsWindowProcessId);
@@ -616,28 +674,11 @@ export default class ReleaseMonitorExtension extends Extension {
         // any gnome-extensions processes that might be related to our extension.
         if (this._prefsProcessId) {
             try {
-                // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
-                const procPath = `/proc/${this._prefsProcessId}`;
-                const procFile = Gio.File.new_for_path(procPath);
-                if (procFile.query_exists(null)) {
-                    // Process still exists, kill it synchronously to ensure it completes
-                    // Use kill -9 (SIGKILL) for forceful termination
-                    const [success, , , exitStatus] = GLib.spawn_command_line_sync(
-                        `kill -9 ${this._prefsProcessId}`
-                    );
-                    if (success && exitStatus === 0) {
-                        Logger.debug(`Killed preferences process ${this._prefsProcessId}`);
-                    } else {
-                        Logger.warn(`Failed to kill preferences process ${this._prefsProcessId}, exit status: ${exitStatus}`);
-                    }
-                    // Close the PID handle
-                    GLib.spawn_close_pid(this._prefsProcessId);
-                } else {
-                    // Process already exited, just close the PID handle
-                    GLib.spawn_close_pid(this._prefsProcessId);
-                }
+                this._terminateProcess(this._prefsProcessId, 'preferences');
+                // Close the PID handle
+                GLib.spawn_close_pid(this._prefsProcessId);
             } catch (e) {
-                Logger.warn(`Error killing preferences process: ${e.message}`);
+                Logger.warn(`Error terminating preferences process: ${e.message}`);
                 // Try to close PID handle even if kill failed
                 try {
                     GLib.spawn_close_pid(this._prefsProcessId);
@@ -665,16 +706,7 @@ export default class ReleaseMonitorExtension extends Extension {
                     for (const pid of pids) {
                         const pidNum = parseInt(pid.trim(), 10);
                         if (!isNaN(pidNum) && pidNum > 0) {
-                            try {
-                                const [killSuccess, , , killExitStatus] = GLib.spawn_command_line_sync(
-                                    `kill -9 ${pidNum}`
-                                );
-                                if (killSuccess && killExitStatus === 0) {
-                                    Logger.debug(`Killed gnome-extensions process ${pidNum} related to ${extensionUuid}`);
-                                }
-                            } catch (killError) {
-                                Logger.warn(`Error killing process ${pidNum}: ${killError.message}`);
-                            }
+                            this._terminateProcess(pidNum, `gnome-extensions (${extensionUuid})`);
                         }
                     }
                 }
