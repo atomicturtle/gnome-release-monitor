@@ -20,9 +20,15 @@ export const ConfigManager = class {
     }
 
     _ensureConfigDir() {
-        const configDirFile = this.configFile.get_parent();
-        if (!configDirFile.query_exists(null)) {
-            configDirFile.make_directory_with_parents(null);
+        try {
+            const configDirFile = this.configFile.get_parent();
+            if (!configDirFile.query_exists(null)) {
+                configDirFile.make_directory_with_parents(null);
+            }
+        } catch (e) {
+            Logger.error("Failed to create config directory", e);
+            // Re-throw as this is critical - config directory must exist
+            throw new Error(`Cannot create config directory: ${e.message}`);
         }
     }
 
@@ -33,9 +39,15 @@ export const ConfigManager = class {
     }
 
     _ensureSignalDir() {
-        const signalDir = this._getSignalDirectory();
-        if (!signalDir.query_exists(null)) {
-            signalDir.make_directory_with_parents(null);
+        try {
+            const signalDir = this._getSignalDirectory();
+            if (!signalDir.query_exists(null)) {
+                signalDir.make_directory_with_parents(null);
+            }
+        } catch (e) {
+            Logger.error("Failed to create signal directory", e);
+            // Don't throw - signal directory is not critical for basic operation
+            // Signals will fail gracefully if directory doesn't exist
         }
     }
 
