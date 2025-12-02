@@ -1,9 +1,4 @@
-import St from "gi://St";
-import GObject from "gi://GObject";
 import Gio from "gi://Gio";
-import Gtk from "gi://Gtk";
-import Soup from "gi://Soup";
-imports.gi.versions.Soup = '3.0';
 import GLib from "gi://GLib";
 import Clutter from "gi://Clutter";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
@@ -549,13 +544,13 @@ export default class ReleaseMonitorExtension extends Extension {
                 if (procFile.query_exists(null)) {
                     // Process still exists, kill it synchronously to ensure it completes
                     // Use kill -9 (SIGKILL) for forceful termination
-                    const [success, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(
+                    const [success, , , exitStatus] = GLib.spawn_command_line_sync(
                         `kill -9 ${reportWindowPid}`
                     );
                     if (success && exitStatus === 0) {
-                        console.log(`Killed report window process ${reportWindowPid}`);
+                        Logger.debug(`Killed report window process ${reportWindowPid}`);
                     } else {
-                        console.log(`Failed to kill report window process ${reportWindowPid}, exit status: ${exitStatus}`);
+                        Logger.warn(`Failed to kill report window process ${reportWindowPid}, exit status: ${exitStatus}`);
                     }
                     // Close the PID handle
                     GLib.spawn_close_pid(reportWindowPid);
@@ -568,7 +563,7 @@ export default class ReleaseMonitorExtension extends Extension {
                     this.indicator._reportWindowProcessId = null;
                 }
             } catch (e) {
-                console.log(`Error killing report window process: ${e.message}`);
+                Logger.warn(`Error killing report window process: ${e.message}`);
                 // Try to close PID handle even if kill failed
                 try {
                     GLib.spawn_close_pid(reportWindowPid);
@@ -589,13 +584,13 @@ export default class ReleaseMonitorExtension extends Extension {
                 if (procFile.query_exists(null)) {
                     // Process still exists, kill it synchronously to ensure it completes
                     // Use kill -9 (SIGKILL) for forceful termination
-                    const [success, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(
+                    const [success, , , exitStatus] = GLib.spawn_command_line_sync(
                         `kill -9 ${this._settingsWindowProcessId}`
                     );
                     if (success && exitStatus === 0) {
-                        console.log(`Killed settings window process ${this._settingsWindowProcessId}`);
+                        Logger.debug(`Killed settings window process ${this._settingsWindowProcessId}`);
                     } else {
-                        console.log(`Failed to kill settings window process ${this._settingsWindowProcessId}, exit status: ${exitStatus}`);
+                        Logger.warn(`Failed to kill settings window process ${this._settingsWindowProcessId}, exit status: ${exitStatus}`);
                     }
                     // Close the PID handle
                     GLib.spawn_close_pid(this._settingsWindowProcessId);
@@ -604,7 +599,7 @@ export default class ReleaseMonitorExtension extends Extension {
                     GLib.spawn_close_pid(this._settingsWindowProcessId);
                 }
             } catch (e) {
-                console.log(`Error killing settings window process: ${e.message}`);
+                Logger.warn(`Error killing settings window process: ${e.message}`);
                 // Try to close PID handle even if kill failed
                 try {
                     GLib.spawn_close_pid(this._settingsWindowProcessId);
@@ -626,13 +621,13 @@ export default class ReleaseMonitorExtension extends Extension {
                 if (procFile.query_exists(null)) {
                     // Process still exists, kill it synchronously to ensure it completes
                     // Use kill -9 (SIGKILL) for forceful termination
-                    const [success, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(
+                    const [success, , , exitStatus] = GLib.spawn_command_line_sync(
                         `kill -9 ${this._prefsProcessId}`
                     );
                     if (success && exitStatus === 0) {
-                        console.log(`Killed preferences process ${this._prefsProcessId}`);
+                        Logger.debug(`Killed preferences process ${this._prefsProcessId}`);
                     } else {
-                        console.log(`Failed to kill preferences process ${this._prefsProcessId}, exit status: ${exitStatus}`);
+                        Logger.warn(`Failed to kill preferences process ${this._prefsProcessId}, exit status: ${exitStatus}`);
                     }
                     // Close the PID handle
                     GLib.spawn_close_pid(this._prefsProcessId);
@@ -641,7 +636,7 @@ export default class ReleaseMonitorExtension extends Extension {
                     GLib.spawn_close_pid(this._prefsProcessId);
                 }
             } catch (e) {
-                console.log(`Error killing preferences process: ${e.message}`);
+                Logger.warn(`Error killing preferences process: ${e.message}`);
                 // Try to close PID handle even if kill failed
                 try {
                     GLib.spawn_close_pid(this._prefsProcessId);
@@ -658,7 +653,7 @@ export default class ReleaseMonitorExtension extends Extension {
         try {
             const extensionUuid = this.metadata.uuid;
             // Use pgrep to find processes with our extension UUID in the command line
-            const [success, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(
+            const [success, stdout] = GLib.spawn_command_line_sync(
                 `pgrep -f "gnome-extensions.*${extensionUuid}" || true`
             );
             if (success && stdout) {
@@ -670,14 +665,14 @@ export default class ReleaseMonitorExtension extends Extension {
                         const pidNum = parseInt(pid.trim(), 10);
                         if (!isNaN(pidNum) && pidNum > 0) {
                             try {
-                                const [killSuccess, killStdout, killStderr, killExitStatus] = GLib.spawn_command_line_sync(
+                                const [killSuccess, , , killExitStatus] = GLib.spawn_command_line_sync(
                                     `kill -9 ${pidNum}`
                                 );
                                 if (killSuccess && killExitStatus === 0) {
-                                    console.log(`Killed gnome-extensions process ${pidNum} related to ${extensionUuid}`);
+                                    Logger.debug(`Killed gnome-extensions process ${pidNum} related to ${extensionUuid}`);
                                 }
                             } catch (killError) {
-                                console.log(`Error killing process ${pidNum}: ${killError.message}`);
+                                Logger.warn(`Error killing process ${pidNum}: ${killError.message}`);
                             }
                         }
                     }
@@ -685,7 +680,7 @@ export default class ReleaseMonitorExtension extends Extension {
             }
         } catch (e) {
             // pgrep might not be available or might fail - this is not critical
-            console.log(`Could not search for gnome-extensions processes: ${e.message}`);
+            Logger.warn(`Could not search for gnome-extensions processes: ${e.message}`);
         }
         
         // Remove UI elements
