@@ -8,6 +8,22 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Adw from 'gi://Adw';
 
+// Logger wrapper for consistent error logging
+// Since report-window.js is a standalone script, we use a simple Logger
+// that matches the logger.js interface (error(msg, err), warn(msg), info(msg), debug(msg))
+const Logger = {
+    error: (msg, err) => {
+        // Format error message consistently with logger.js
+        const fullMessage = err && err.stack
+            ? `${String(msg)}: ${err.message}\n${err.stack}`
+            : String(msg);
+        console.error(`[ReleaseMonitor][ERROR] ${fullMessage}`);
+    },
+    warn: (msg) => console.error(`[ReleaseMonitor][WARN] ${String(msg)}`),
+    info: (msg) => console.log(`[ReleaseMonitor][INFO] ${String(msg)}`),
+    debug: (msg) => console.log(`[ReleaseMonitor][DEBUG] ${String(msg)}`)
+};
+
 Adw.init();
 
 // Simple debug flag for this helper window; set to true only when debugging
@@ -58,7 +74,7 @@ const loadProjects = () => {
             return true;
         }
     } catch (e) {
-        console.error(`Error reading projects file: ${e.message}`);
+        Logger.error(`Error reading projects file: ${e.message}`, e);
         return false;
     }
     return false;
@@ -73,7 +89,7 @@ const saveProjects = () => {
         debugLog(`Saved ${projects.length} projects to file`);
         return true;
     } catch (e) {
-        console.error(`Error saving projects file: ${e.message}`);
+        Logger.error(`Error saving projects file: ${e.message}`, e);
         return false;
     }
 };
@@ -506,7 +522,7 @@ app.connect('startup', () => {
                 // Check every 500ms for up to 5 seconds (increased from 2.5)
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, checkAndRefresh);
             } catch (e) {
-                console.error(`Could not create reload signal file: ${e.message}`);
+                Logger.error(`Could not create reload signal file: ${e.message}`, e);
             }
         });
         headerBar.pack_start(reloadButton);
@@ -531,7 +547,7 @@ app.connect('startup', () => {
                 signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
                 debugLog('Reload signal file created (empty projects case)');
             } catch (e) {
-                console.error(`Could not create reload signal file: ${e.message}`);
+                Logger.error(`Could not create reload signal file: ${e.message}`, e);
             }
         });
         headerBar.pack_start(reloadButtonEmpty);
@@ -554,7 +570,7 @@ app.connect('startup', () => {
         try {
             signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
         } catch (e) {
-            console.log(`Could not create signal file: ${e.message}`);
+            Logger.error(`Could not create signal file: ${e.message}`, e);
         }
     });
     headerBar.pack_start(settingsButton);
@@ -653,8 +669,7 @@ try {
     const exitCode = app.run([]);
     console.log(`Application exited with code: ${exitCode}`);
 } catch (e) {
-    console.error(`Error in application: ${e.message}`);
-    console.error(e.stack);
+    Logger.error(`Error in application: ${e.message}`, e);
     // Exit with error code
     imports.system.exit(1);
 }
