@@ -10,6 +10,15 @@ import {
 } from "resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js";
 import { ConfigManager } from "./configManager.js";
 
+// Simple debug flag for the preferences window
+const DEBUG = false;
+
+function debugLog(message) {
+    if (DEBUG) {
+        console.log(message);
+    }
+}
+
 // ============================================================================
 // GitHubAPI - Handles GitHub API interactions
 // ============================================================================
@@ -550,7 +559,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         try {
             apiToken = settings.get_string('release-monitoring-api-token') || null;
         } catch (e) {
-            console.log(`Could not read release-monitoring-api-token from GSettings: ${e.message}`);
+            debugLog(`Could not read release-monitoring-api-token from GSettings: ${e.message}`);
             // Fallback: check temporary settings file if GSettings doesn't have it yet
             try {
                 const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
@@ -562,18 +571,18 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                         const settingsData = JSON.parse(jsonStr);
                         if (settingsData.apiToken) {
                             apiToken = settingsData.apiToken;
-                            console.log(`Using API token from temporary settings file`);
+                            debugLog(`Using API token from temporary settings file`);
                         }
                     }
                 }
             } catch (e2) {
-                console.log(`Could not read API token from temporary file: ${e2.message}`);
+                debugLog(`Could not read API token from temporary file: ${e2.message}`);
             }
         }
         if (!apiToken || !apiToken.trim()) {
-            console.log(`No API token found - release-monitoring.org requests may be blocked`);
+            debugLog(`No API token found - release-monitoring.org requests may be blocked`);
         } else {
-            console.log(`Using API token: ${apiToken.substring(0, 4)}...${apiToken.substring(apiToken.length - 4)}`);
+            debugLog(`Using API token: ${apiToken.substring(0, 4)}...${apiToken.substring(apiToken.length - 4)}`);
         }
         const releaseMonitoringAPI = new ReleaseMonitoringAPI(apiToken);
         

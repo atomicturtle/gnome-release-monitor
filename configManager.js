@@ -1,5 +1,6 @@
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
+import * as Logger from "./logger.js";
 
 // ============================================================================
 // ConfigManager - Manages project configuration storage
@@ -33,7 +34,7 @@ export const ConfigManager = class {
                 }
             }
         } catch (e) {
-            log(`Error loading config: ${e}`);
+            Logger.error("Error loading config", e);
             this.projects = [];
         }
     }
@@ -45,13 +46,12 @@ export const ConfigManager = class {
             const data = encoder.encode(jsonStr);
             const [success, etag] = this.configFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
             if (success) {
-                console.log(`Config saved successfully`);
+                Logger.info("Config saved successfully");
             } else {
-                console.error(`Config save failed`);
+                Logger.error("Config save failed");
             }
         } catch (e) {
-            console.error(`Error saving config: ${e.message}`);
-            log(`Error saving config: ${e}`);
+            Logger.error("Error saving config", e);
         }
     }
 
@@ -96,7 +96,7 @@ export const ConfigManager = class {
         // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
         const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
         
-        console.log(`removeProject: Removing project owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
+        Logger.info(`removeProject: Removing project owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
         const beforeCount = this.projects.length;
         
         if (source === 'release-monitoring') {
@@ -105,7 +105,7 @@ export const ConfigManager = class {
                     const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
                     const matches = p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedFilter;
                     if (matches) {
-                        console.log(`removeProject: Filtering out release-monitoring project: ${p.projectName} (filter: ${pFilter})`);
+                        Logger.debug(`removeProject: Filtering out release-monitoring project: ${p.projectName} (filter: ${pFilter})`);
                     }
                     return !matches;
                 }
@@ -119,7 +119,7 @@ export const ConfigManager = class {
                     const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
                     const matches = isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
                     if (matches) {
-                        console.log(`removeProject: Filtering out GitHub project: ${p.owner}/${p.repo} (source was: ${p.source}, filter: ${pFilter})`);
+                        Logger.debug(`removeProject: Filtering out GitHub project: ${p.owner}/${p.repo} (source was: ${p.source}, filter: ${pFilter})`);
                     }
                     return !matches;
                 }
@@ -127,12 +127,12 @@ export const ConfigManager = class {
         }
         
         const afterCount = this.projects.length;
-        console.log(`removeProject: Project count changed from ${beforeCount} to ${afterCount}`);
+        Logger.info(`removeProject: Project count changed from ${beforeCount} to ${afterCount}`);
         if (beforeCount === afterCount) {
-            console.error(`removeProject: WARNING - Project was not removed! Check if project exists with owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
+            Logger.error(`removeProject: WARNING - Project was not removed! Check if project exists with owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
         }
         this.save();
-        console.log(`removeProject: Config saved after removal`);
+        Logger.info("removeProject: Config saved after removal");
     }
 
     updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null, isNewRelease = false) {
@@ -172,9 +172,9 @@ export const ConfigManager = class {
             // Set hasNewRelease flag: true if this is a new release, false otherwise
             project.hasNewRelease = isNewRelease;
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
+            Logger.info(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
             this.save();
-            console.log(`updateProjectRelease: Config saved, reloading...`);
+            Logger.info("updateProjectRelease: Config saved, reloading...");
             this.load(); // Reload to ensure consistency
             // Verify after reload
             const verifyProject = this.projects.find(
@@ -191,13 +191,13 @@ export const ConfigManager = class {
             );
             if (verifyProject && verifyProject.lastRelease) {
                 const savedVersion = verifyProject.lastRelease.tag_name || verifyProject.lastRelease.version;
-                console.log(`updateProjectRelease: Verified saved version is ${savedVersion} for ${identifier} (filter: ${normalizedFilter})`);
+                Logger.info(`updateProjectRelease: Verified saved version is ${savedVersion} for ${identifier} (filter: ${normalizedFilter})`);
             } else {
-                console.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier} (filter: ${normalizedFilter})`);
+                Logger.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier} (filter: ${normalizedFilter})`);
             }
         } else {
             const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.error(`updateProjectRelease: Project ${identifier} not found in config (source: ${source}, filter: ${normalizedFilter})`);
+            Logger.error(`updateProjectRelease: Project ${identifier} not found in config (source: ${source}, filter: ${normalizedFilter})`);
         }
     }
 

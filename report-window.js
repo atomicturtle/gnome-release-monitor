@@ -10,6 +10,15 @@ import Adw from 'gi://Adw';
 
 Adw.init();
 
+// Simple debug flag for this helper window; set to true only when debugging
+const DEBUG = false;
+
+function debugLog(message) {
+    if (DEBUG) {
+        console.log(message);
+    }
+}
+
 // Read projects and version from command line arguments
 // Expected: report-window.js <projects-json-file> <version>
 // If projects-json-file is "config", read from the actual config file location
@@ -28,11 +37,11 @@ if (args[0] === 'config') {
     const configDir = GLib.get_user_config_dir();
     const configPath = GLib.build_filenamev([configDir, 'release-monitor', 'projects.json']);
     projectsFile = Gio.File.new_for_path(configPath);
-    console.log(`Using config file: ${configPath}`);
+    debugLog(`Using config file: ${configPath}`);
 } else {
     // Use the temporary file passed as argument (for backward compatibility)
     projectsFile = Gio.File.new_for_path(args[0]);
-    console.log(`Using temporary file: ${args[0]}`);
+    debugLog(`Using temporary file: ${args[0]}`);
 }
 
 // Read projects from JSON file
@@ -45,7 +54,7 @@ const loadProjects = () => {
             const decoder = new TextDecoder('utf-8');
             const jsonData = decoder.decode(contents);
             projects = JSON.parse(jsonData);
-            console.log(`Loaded ${projects.length} projects from file`);
+            debugLog(`Loaded ${projects.length} projects from file`);
             return true;
         }
     } catch (e) {
@@ -61,7 +70,7 @@ const saveProjects = () => {
         const jsonData = JSON.stringify(projects, null, 2);
         const data = encoder.encode(jsonData);
         projectsFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
-        console.log(`Saved ${projects.length} projects to file`);
+        debugLog(`Saved ${projects.length} projects to file`);
         return true;
     } catch (e) {
         console.error(`Error saving projects file: ${e.message}`);
@@ -96,7 +105,7 @@ app.connect('activate', () => {
 
 // Wait for application startup before creating window
 app.connect('startup', () => {
-    console.log('Application startup - creating window...');
+    debugLog('Application startup - creating window...');
     window = new Adw.ApplicationWindow({
         application: app
     });
@@ -154,7 +163,7 @@ app.connect('startup', () => {
         styleManager.set_color_scheme(Adw.ColorScheme.DEFAULT);
     }
     
-    console.log('Creating mainBox...');
+    debugLog('Creating mainBox...');
     const mainBox = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
         spacing: 10,
@@ -172,7 +181,7 @@ app.connect('startup', () => {
     });
     reportTitleLabel.set_visible(true);
     mainBox.append(reportTitleLabel);
-    console.log('Title label added to mainBox');
+    debugLog('Title label added to mainBox');
     
     if (projects.length === 0) {
         const emptyLabel = new Gtk.Label({
@@ -428,7 +437,7 @@ app.connect('startup', () => {
         scrolled.set_child(tableBox);
         scrolled.set_visible(true);
         mainBox.append(scrolled);
-        console.log(`Scrolled window with table added to mainBox, projects count: ${projects.length}`);
+        debugLog(`Scrolled window with table added to mainBox, projects count: ${projects.length}`);
         
         // Add reload button to header bar (left side) - must be inside this block to access rebuildTable
         const reloadButton = new Gtk.Button({
@@ -441,7 +450,7 @@ app.connect('startup', () => {
             const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
             try {
                 signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
-                console.log('Reload signal file created');
+                debugLog('Reload signal file created');
                 
                 // Store initial project count and identifiers to detect changes
                 const initialProjectCount = projects.length;
@@ -474,7 +483,7 @@ app.connect('startup', () => {
                         
                         // Refresh if: count changed, IDs changed, releases found, or max attempts reached
                         if (projectCountChanged || projectIdsChanged || hasReleases || attempts >= maxAttempts) {
-                            console.log(`Reload: Refreshing - count changed: ${projectCountChanged}, IDs changed: ${projectIdsChanged}, has releases: ${hasReleases}, attempts: ${attempts}`);
+                            debugLog(`Reload: Refreshing - count changed: ${projectCountChanged}, IDs changed: ${projectIdsChanged}, has releases: ${hasReleases}, attempts: ${attempts}`);
                             rebuildTable(sortColumn, sortAscending);
                             return false; // Stop checking
                         }
@@ -483,7 +492,7 @@ app.connect('startup', () => {
                         return true; // Continue checking
                     }
                     // Final refresh even if no changes detected
-                    console.log(`Reload: Final refresh after ${attempts} attempts`);
+                    debugLog(`Reload: Final refresh after ${attempts} attempts`);
                     rebuildTable(sortColumn, sortAscending);
                     return false;
                 };
@@ -491,7 +500,7 @@ app.connect('startup', () => {
                 // Check every 500ms for up to 5 seconds (increased from 2.5)
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, checkAndRefresh);
             } catch (e) {
-                console.log(`Could not create reload signal file: ${e.message}`);
+                console.error(`Could not create reload signal file: ${e.message}`);
             }
         });
         headerBar.pack_start(reloadButton);
@@ -508,9 +517,9 @@ app.connect('startup', () => {
             const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
             try {
                 signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
-                console.log('Reload signal file created (empty projects case)');
+                debugLog('Reload signal file created (empty projects case)');
             } catch (e) {
-                console.log(`Could not create reload signal file: ${e.message}`);
+                console.error(`Could not create reload signal file: ${e.message}`);
             }
         });
         headerBar.pack_start(reloadButtonEmpty);

@@ -15,6 +15,7 @@ import { ConfigManager } from "./configManager.js";
 import { GitHubAPI } from "./githubAPI.js";
 import { ReleaseMonitoringAPI } from "./releaseMonitoringAPI.js";
 import { ReleaseMonitorIndicator } from "./indicator.js";
+import * as Logger from "./logger.js";
 
 // ============================================================================
 // Extension class
@@ -40,6 +41,8 @@ export default class ReleaseMonitorExtension extends Extension {
 
     enable() {
         try {
+            Logger.info("Enabling ReleaseMonitorExtension");
+
             this.configManager = new ConfigManager();
             this.githubAPI = new GitHubAPI();
             
@@ -48,7 +51,7 @@ export default class ReleaseMonitorExtension extends Extension {
             try {
                 apiToken = this.getSettings().get_string('release-monitoring-api-token') || null;
             } catch (e) {
-                console.log(`Could not read release-monitoring-api-token: ${e.message}`);
+                Logger.warn(`Could not read release-monitoring-api-token: ${e.message}`);
             }
             this.releaseMonitoringAPI = new ReleaseMonitoringAPI(apiToken);
             this.settings = this.getSettings();
@@ -67,8 +70,7 @@ export default class ReleaseMonitorExtension extends Extension {
                         this._moveIndicator();
                     });
                 } catch (e) {
-                    console.error(`Error creating indicator: ${e.message}`);
-                    console.error(`Stack: ${e.stack}`);
+                    Logger.error("Error creating indicator", e);
                 }
                 return false; // Don't repeat
             });
@@ -91,8 +93,7 @@ export default class ReleaseMonitorExtension extends Extension {
                 return false; // Don't repeat
             });
         } catch (e) {
-            console.error(`Error in enable(): ${e.message}`);
-            console.error(`Stack: ${e.stack}`);
+            Logger.error("Error in enable()", e);
         }
     }
 
@@ -101,7 +102,7 @@ export default class ReleaseMonitorExtension extends Extension {
         try {
             position = this.settings.get_string('icon-position') || 'right';
         } catch (e) {
-            console.log(`Could not read icon-position setting: ${e.message}, using default 'right'`);
+            Logger.warn(`Could not read icon-position setting: ${e.message}, using default 'right'`);
         }
         
         // Remove from any existing position first
@@ -123,12 +124,12 @@ export default class ReleaseMonitorExtension extends Extension {
                     }
                 } catch (e) {
                     // Ignore - might not be in status area or API changed
-                    console.log(`Could not remove from status area indicators: ${e.message}`);
+                    Logger.debug(`Could not remove from status area indicators: ${e.message}`);
                 }
             }
         } catch (e) {
             // Ignore - statusArea or _indicators might not exist
-            console.log(`Status area API not available: ${e.message}`);
+            Logger.debug(`Status area API not available: ${e.message}`);
         }
         
         // Add to the appropriate panel area
@@ -138,22 +139,22 @@ export default class ReleaseMonitorExtension extends Extension {
             if (position === 'left') {
                 if (Main.panel._leftBox) {
                     Main.panel._leftBox.insert_child_at_index(this.indicator, -1);
-                    console.log('Added indicator to left panel');
+                    Logger.info('Added indicator to left panel');
                     return;
                 } else {
-                    console.log('Left panel API (_leftBox) not available, falling back to right');
+                    Logger.info('Left panel API (_leftBox) not available, falling back to right');
                 }
             } else if (position === 'center') {
                 if (Main.panel._centerBox) {
                     Main.panel._centerBox.insert_child_at_index(this.indicator, -1);
-                    console.log('Added indicator to center panel');
+                    Logger.info('Added indicator to center panel');
                     return;
                 } else {
-                    console.log('Center panel API (_centerBox) not available, falling back to right');
+                    Logger.info('Center panel API (_centerBox) not available, falling back to right');
                 }
             }
         } catch (e) {
-            console.log(`Could not add indicator to ${position} panel: ${e.message}, falling back to right`);
+            Logger.warn(`Could not add indicator to ${position} panel: ${e.message}, falling back to right`);
         }
         
         // Default to right (status area)
@@ -172,11 +173,11 @@ export default class ReleaseMonitorExtension extends Extension {
                         // Insert at position that's before the system controls
                         const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items (system controls)
                         container.insert_child_at_index(this.indicator, insertIndex);
-                        console.log(`Added indicator to right panel (status area) via _rightBox at index ${insertIndex}`);
+                        Logger.info(`Added indicator to right panel (status area) via _rightBox at index ${insertIndex}`);
                         return;
                     }
                 } catch (e) {
-                    console.log(`_rightBox API not available: ${e.message}`);
+                    Logger.debug(`_rightBox API not available: ${e.message}`);
                 }
                 
                 // Check for _indicators container
@@ -187,11 +188,11 @@ export default class ReleaseMonitorExtension extends Extension {
                         const children = container.get_children();
                         const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items
                         container.insert_child_at_index(this.indicator, insertIndex);
-                        console.log(`Added indicator to right panel (status area) via _indicators at index ${insertIndex}`);
+                        Logger.info(`Added indicator to right panel (status area) via _indicators at index ${insertIndex}`);
                         return;
                     }
                 } catch (e) {
-                    console.log(`_indicators API not available: ${e.message}`);
+                    Logger.debug(`_indicators API not available: ${e.message}`);
                 }
                 // Check if statusArea itself is a container
                 if (typeof Main.panel.statusArea.insert_child_at_index === 'function') {
@@ -199,14 +200,14 @@ export default class ReleaseMonitorExtension extends Extension {
                     const children = container.get_children();
                     const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items
                     container.insert_child_at_index(this.indicator, insertIndex);
-                    console.log(`Added indicator to right panel (status area) at index ${insertIndex}`);
+                    Logger.info(`Added indicator to right panel (status area) at index ${insertIndex}`);
                     return;
                 }
                 // Check if statusArea has add_child or append methods
                 if (typeof Main.panel.statusArea.add_child === 'function') {
                     // For add_child, we need to find where to insert
                     // Try to find system controls and insert before them
-                    const container = Main.panel.statusArea;
+                        const container = Main.panel.statusArea;
                     const children = container.get_children();
                     // Find a good insertion point (before system controls)
                     // System controls are usually added last, so insert before the last few
@@ -217,10 +218,10 @@ export default class ReleaseMonitorExtension extends Extension {
                         // Move to before system controls
                         const targetIndex = Math.max(0, children.length - 2);
                         container.set_child_at_index(this.indicator, targetIndex);
-                        console.log(`Added indicator to right panel (status area) via add_child at index ${targetIndex}`);
+                        Logger.info(`Added indicator to right panel (status area) via add_child at index ${targetIndex}`);
                     } else {
                         container.add_child(this.indicator);
-                        console.log('Added indicator to right panel (status area) via add_child');
+                        Logger.info('Added indicator to right panel (status area) via add_child');
                     }
                     return;
                 }
@@ -234,11 +235,11 @@ export default class ReleaseMonitorExtension extends Extension {
                     const children = container.get_children();
                     const insertIndex = Math.max(0, children.length - 3); // Insert before last 3 items
                     container.insert_child_at_index(this.indicator, insertIndex);
-                    console.log(`Added indicator to right panel via panel._rightBox at index ${insertIndex}`);
+                    Logger.info(`Added indicator to right panel via panel._rightBox at index ${insertIndex}`);
                     return;
                 }
             } catch (e) {
-                console.log(`panel._rightBox API not available: ${e.message}`);
+                Logger.debug(`panel._rightBox API not available: ${e.message}`);
             }
             
             // Last resort: use addToStatusArea (public API - should always work)
@@ -257,32 +258,32 @@ export default class ReleaseMonitorExtension extends Extension {
                                 const targetIndex = Math.max(0, children.length - 4); // Before system controls
                                 if (currentIndex !== targetIndex) {
                                     container.set_child_at_index(this.indicator, targetIndex);
-                                    console.log(`Moved indicator from index ${currentIndex} to ${targetIndex}`);
+                                    Logger.info(`Moved indicator from index ${currentIndex} to ${targetIndex}`);
                                 }
                             }
                         }
                     } catch (e) {
                         // Ignore - reordering is optional, indicator is already added
-                        console.log(`Could not reorder indicator: ${e.message}`);
+                        Logger.debug(`Could not reorder indicator: ${e.message}`);
                     }
-                    console.log('Added indicator to right panel (status area) via addToStatusArea (public API)');
+                    Logger.info('Added indicator to right panel (status area) via addToStatusArea (public API)');
                     return;
                 } catch (e) {
-                    console.error(`Failed to add indicator via addToStatusArea: ${e.message}`);
+                    Logger.error(`Failed to add indicator via addToStatusArea: ${e.message}`);
                 }
             } else {
-                console.error('Cannot use addToStatusArea - indicator already registered. Status area structure not accessible.');
+                Logger.error('Cannot use addToStatusArea - indicator already registered. Status area structure not accessible.');
             }
         } catch (e) {
-            console.error(`Failed to add indicator to status area: ${e.message}`);
+            Logger.error(`Failed to add indicator to status area: ${e.message}`);
             // Final fallback: try addToStatusArea even if _wasInStatusArea is true
             // This might work if the indicator was removed from status area
             try {
                 Main.panel.addToStatusArea('release-monitor', this.indicator);
                 this._wasInStatusArea = true;
-                console.log('Added indicator to right panel (status area) via addToStatusArea (fallback)');
+                Logger.info('Added indicator to right panel (status area) via addToStatusArea (fallback)');
             } catch (e2) {
-                console.error(`Final fallback failed: ${e2.message}`);
+                Logger.error(`Final fallback failed: ${e2.message}`);
             }
         }
     }
@@ -312,17 +313,17 @@ export default class ReleaseMonitorExtension extends Extension {
                 try {
                     if (signalFile.query_exists(null)) {
                         // Signal file exists - open settings window
-                        console.log('Settings signal file detected, opening settings window...');
+                        Logger.info('Settings signal file detected, opening settings window...');
                         this._openSettingsWindow();
                         // Delete the signal file
                         try {
                             signalFile.delete(null);
                         } catch (e) {
-                            console.log(`Could not delete signal file: ${e.message}`);
+                            Logger.warn(`Could not delete signal file: ${e.message}`);
                         }
                     }
                 } catch (e) {
-                    console.log(`Error checking settings signal file: ${e.message}`);
+                    Logger.warn(`Error checking settings signal file: ${e.message}`);
                 }
                 return true; // Continue watching
             }
@@ -336,11 +337,11 @@ export default class ReleaseMonitorExtension extends Extension {
             const procPath = `/proc/${this._settingsWindowProcessId}`;
             const procFile = Gio.File.new_for_path(procPath);
             if (procFile.query_exists(null)) {
-                console.log('_openSettingsWindow: Settings window already open, skipping');
+                Logger.info('_openSettingsWindow: Settings window already open, skipping');
                 return;
             } else {
                 // Process doesn't exist, clear the ID and continue
-                console.log('_openSettingsWindow: Previous settings window process no longer exists, clearing ID');
+                Logger.info('_openSettingsWindow: Previous settings window process no longer exists, clearing ID');
                 this._settingsWindowProcessId = null;
             }
         }
@@ -362,17 +363,17 @@ export default class ReleaseMonitorExtension extends Extension {
             try {
                 currentPosition = this.settings.get_string('icon-position') || 'right';
             } catch (e) {
-                console.log(`Could not read icon-position: ${e.message}`);
+                Logger.warn(`Could not read icon-position: ${e.message}`);
             }
             
             let currentApiToken = '';
             try {
                 currentApiToken = this.settings.get_string('release-monitoring-api-token') || '';
             } catch (e) {
-                console.log(`Could not read release-monitoring-api-token: ${e.message}`);
+                Logger.warn(`Could not read release-monitoring-api-token: ${e.message}`);
             }
             
-            console.log(`_openSettingsWindow: Launching ${settingsWindowScript} with interval=${currentInterval}, position=${currentPosition}, apiToken=${currentApiToken ? '***' : '(empty)'}`);
+            Logger.info(`_openSettingsWindow: Launching ${settingsWindowScript} with interval=${currentInterval}, position=${currentPosition}, apiToken=${currentApiToken ? '***' : '(empty)'}`);
             
             const [success, pid] = GLib.spawn_async(
                 null,
@@ -388,18 +389,17 @@ export default class ReleaseMonitorExtension extends Extension {
             
             // Track the process ID to prevent multiple windows
             this._settingsWindowProcessId = pid;
-            console.log(`_openSettingsWindow: Process launched with PID ${pid}`);
+            Logger.info(`_openSettingsWindow: Process launched with PID ${pid}`);
             
             // Monitor process to clear the ID when it exits
             GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, status) => {
-                console.log(`_openSettingsWindow: Process ${pid} exited with status ${status}`);
+                Logger.info(`_openSettingsWindow: Process ${pid} exited with status ${status}`);
                 this._settingsWindowProcessId = null;
                 GLib.spawn_close_pid(pid);
                 return GLib.SOURCE_REMOVE;
             });
         } catch (e) {
-            console.error(`Error launching settings window: ${e.message}`);
-            console.error(`Stack trace: ${e.stack}`);
+            Logger.error("Error launching settings window", e);
             Main.notify('Error', `Failed to open settings window: ${e.message}`);
         }
     }
@@ -415,17 +415,17 @@ export default class ReleaseMonitorExtension extends Extension {
                 try {
                     if (signalFile.query_exists(null)) {
                         // Signal file exists - read and apply settings
-                        console.log('Settings update signal file detected, reading settings...');
+                        Logger.debug('Settings update signal file detected, reading settings...');
                         this._applySettingsUpdate();
                         // Delete the signal file
                         try {
                             signalFile.delete(null);
                         } catch (e) {
-                            console.log(`Could not delete signal file: ${e.message}`);
+                            Logger.warn(`Could not delete signal file: ${e.message}`);
                         }
                     }
                 } catch (e) {
-                    console.log(`Error checking settings update signal file: ${e.message}`);
+                    Logger.warn(`Error checking settings update signal file: ${e.message}`);
                 }
                 return true; // Continue watching
             }
@@ -443,7 +443,7 @@ export default class ReleaseMonitorExtension extends Extension {
                 try {
                     if (signalFile.query_exists(null)) {
                         // Signal file exists - trigger reload
-                        console.log('Reload signal file detected, checking for updates...');
+                        Logger.debug('Reload signal file detected, checking for updates...');
                         // Reload config first to get any newly added projects
                         this.configManager.load();
                         this.checkForUpdates();
@@ -451,11 +451,11 @@ export default class ReleaseMonitorExtension extends Extension {
                         try {
                             signalFile.delete(null);
                         } catch (e) {
-                            console.log(`Could not delete reload signal file: ${e.message}`);
+                            Logger.warn(`Could not delete reload signal file: ${e.message}`);
                         }
                     }
                 } catch (e) {
-                    console.log(`Error checking reload signal file: ${e.message}`);
+                    Logger.warn(`Error checking reload signal file: ${e.message}`);
                 }
                 return true; // Continue watching
             }
@@ -473,18 +473,18 @@ export default class ReleaseMonitorExtension extends Extension {
                     const jsonData = decoder.decode(contents);
                     const settingsData = JSON.parse(jsonData);
                     
-                    console.log(`_applySettingsUpdate: Applying settings: ${JSON.stringify(settingsData)}`);
+                    Logger.debug(`_applySettingsUpdate: Applying settings: ${JSON.stringify(settingsData)}`);
                     
                     // Update icon position
                     if (settingsData.iconPosition) {
                         this.settings.set_string('icon-position', settingsData.iconPosition);
-                        console.log(`_applySettingsUpdate: Icon position set to ${settingsData.iconPosition}`);
+                        Logger.info(`_applySettingsUpdate: Icon position set to ${settingsData.iconPosition}`);
                     }
                     
                     // Update refresh interval
                     if (settingsData.refreshInterval) {
                         this.settings.set_int('refresh-interval', settingsData.refreshInterval);
-                        console.log(`_applySettingsUpdate: Refresh interval set to ${settingsData.refreshInterval} seconds`);
+                        Logger.info(`_applySettingsUpdate: Refresh interval set to ${settingsData.refreshInterval} seconds`);
                         // Restart the check interval with new value
                         this._restartCheckInterval();
                     }
@@ -492,7 +492,7 @@ export default class ReleaseMonitorExtension extends Extension {
                     // Update API token and recreate ReleaseMonitoringAPI
                     if (settingsData.apiToken !== undefined) {
                         this.settings.set_string('release-monitoring-api-token', settingsData.apiToken || '');
-                        console.log(`_applySettingsUpdate: API token ${settingsData.apiToken ? 'updated' : 'cleared'}`);
+                        Logger.info(`_applySettingsUpdate: API token ${settingsData.apiToken ? 'updated' : 'cleared'}`);
                         // Recreate the API instance with the new token
                         this.releaseMonitoringAPI = new ReleaseMonitoringAPI(settingsData.apiToken || null);
                     }
@@ -501,12 +501,12 @@ export default class ReleaseMonitorExtension extends Extension {
                     try {
                         settingsFile.delete(null);
                     } catch (e) {
-                        console.log(`Could not delete settings file: ${e.message}`);
+                        Logger.warn(`Could not delete settings file: ${e.message}`);
                     }
                 }
             }
         } catch (e) {
-            console.error(`Error applying settings update: ${e.message}`);
+            Logger.error("Error applying settings update", e);
         }
     }
     
@@ -519,7 +519,7 @@ export default class ReleaseMonitorExtension extends Extension {
         
         // Get new interval from settings
         const interval = this.settings.get_int('refresh-interval');
-        console.log(`_restartCheckInterval: Starting check interval with ${interval} seconds`);
+        Logger.info(`_restartCheckInterval: Starting check interval with ${interval} seconds`);
         
         // Start new interval
         this.checkInterval = GLib.timeout_add_seconds(
@@ -730,7 +730,7 @@ export default class ReleaseMonitorExtension extends Extension {
         // Reload config to get latest projects (in case they were added via prefs.js)
         this.configManager.load();
         const projects = this.configManager.getProjects();
-        console.log(`checkForUpdates: Checking ${projects.length} projects`);
+        Logger.debug(`checkForUpdates: Checking ${projects.length} projects`);
         let hasNewReleases = false;
         
         const checkPromises = projects.map(async (project) => {
@@ -744,19 +744,19 @@ export default class ReleaseMonitorExtension extends Extension {
                 if (source === 'release-monitoring') {
                     const projectName = project.projectName || project.owner; // Fallback to owner for compatibility
                     projectIdentifier = projectName;
-                    console.log(`checkForUpdates: Checking release-monitoring.org project "${projectName}"${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                    Logger.debug(`checkForUpdates: Checking release-monitoring.org project "${projectName}"${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                     release = await this.releaseMonitoringAPI.getLatestRelease(projectName, versionFilter);
                 } else {
                     // GitHub
                     projectIdentifier = `${project.owner}/${project.repo}`;
-                    console.log(`checkForUpdates: Checking GitHub ${projectIdentifier}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                    Logger.debug(`checkForUpdates: Checking GitHub ${projectIdentifier}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                     release = await this.githubAPI.getLatestRelease(project.owner, project.repo, versionFilter);
                 }
                 
                 if (release) {
                     const releaseVersion = release.tag_name || release.version || release.name;
-                    console.log(`checkForUpdates: Found release ${releaseVersion} for ${projectIdentifier}`);
-                    console.log(`checkForUpdates: Release object: ${JSON.stringify({tag_name: release.tag_name, version: release.version, name: release.name})}`);
+                    Logger.debug(`checkForUpdates: Found release ${releaseVersion} for ${projectIdentifier}`);
+                    Logger.debug(`checkForUpdates: Release object: ${JSON.stringify({tag_name: release.tag_name, version: release.version, name: release.name})}`);
                     
                     // Check if this is a new release
                     // For release-monitoring.org, published_at may be null, so we compare versions
@@ -769,7 +769,7 @@ export default class ReleaseMonitorExtension extends Extension {
                                 ? (project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name)
                                 : null;
                             if (lastReleaseVersion !== releaseVersion) {
-                                console.log(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion}`);
+                                Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion}`);
                                 return true;
                             }
                             // If version is the same, check date
@@ -778,7 +778,7 @@ export default class ReleaseMonitorExtension extends Extension {
                                 ? new Date(project.lastRelease.published_at)
                                 : null;
                             if (releaseDate && lastReleaseDate && releaseDate > lastReleaseDate) {
-                                console.log(`checkForUpdates: Date changed from ${lastReleaseDate} to ${releaseDate}`);
+                                Logger.info(`checkForUpdates: Date changed from ${lastReleaseDate} to ${releaseDate}`);
                                 return true;
                             }
                             // If no lastRelease, it's new
@@ -789,7 +789,7 @@ export default class ReleaseMonitorExtension extends Extension {
                         })();
                     
                     // Always update the config with the latest release info
-                    console.log(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}, isNewRelease: ${isNewRelease}`);
+                    Logger.debug(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}, isNewRelease: ${isNewRelease}`);
                     try {
                         const versionFilter = project.versionFilter || null;
                         if (source === 'release-monitoring') {
@@ -813,7 +813,7 @@ export default class ReleaseMonitorExtension extends Extension {
                                 isNewRelease
                             );
                         }
-                        console.log(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);
+                        Logger.debug(`checkForUpdates: updateProjectRelease completed for ${projectIdentifier}`);
                         // Verify the update by reloading and checking
                         this.configManager.load();
                         const updatedProject = this.configManager.getProjects().find(
@@ -823,13 +823,12 @@ export default class ReleaseMonitorExtension extends Extension {
                         );
                         if (updatedProject && updatedProject.lastRelease) {
                             const savedVersion = updatedProject.lastRelease.tag_name || updatedProject.lastRelease.version || updatedProject.lastRelease.name;
-                            console.log(`checkForUpdates: Verified saved version is ${savedVersion} for ${projectIdentifier}`);
+                            Logger.info(`checkForUpdates: Verified saved version is ${savedVersion} for ${projectIdentifier}`);
                         } else {
-                            console.error(`checkForUpdates: WARNING - Could not verify saved release for ${projectIdentifier}`);
+                            Logger.error(`checkForUpdates: WARNING - Could not verify saved release for ${projectIdentifier}`);
                         }
                     } catch (e) {
-                        console.error(`checkForUpdates: Error updating project release: ${e.message}`);
-                        log(`checkForUpdates: Error updating project release: ${e}`);
+                        Logger.error(`checkForUpdates: Error updating project release: ${e.message}`, e);
                     }
                     
                     // Check if this is a new release
@@ -851,20 +850,19 @@ export default class ReleaseMonitorExtension extends Extension {
                     // Use GLib.idle_add to ensure menu rebuild happens after config save
                     GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                         if (this.indicator) {
-                            console.log(`checkForUpdates: Rebuilding menu after release update`);
+                            Logger.info(`checkForUpdates: Rebuilding menu after release update`);
                             this.indicator._buildMenu();
                         }
                         return false; // Don't repeat
                     });
                 } else {
-                    console.log(`checkForUpdates: No releases found for ${projectIdentifier}`);
+                    Logger.info(`checkForUpdates: No releases found for ${projectIdentifier}`);
                 }
             } catch (e) {
                 const projectIdentifier = project.source === 'release-monitoring' 
                     ? (project.projectName || project.owner || 'unknown')
                     : `${project.owner}/${project.repo}`;
-                console.error(`Error checking ${projectIdentifier}: ${e.message}`);
-                log(`Error checking ${projectIdentifier}: ${e}`);
+                Logger.error(`Error checking ${projectIdentifier}: ${e.message}`, e);
             }
         });
         

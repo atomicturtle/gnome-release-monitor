@@ -1,6 +1,7 @@
 import Soup from "gi://Soup";
 imports.gi.versions.Soup = '3.0';
 import GLib from "gi://GLib";
+import * as Logger from "./logger.js";
 
 // ============================================================================
 // GitHubAPI - Handles GitHub API interactions
@@ -44,7 +45,7 @@ export const GitHubAPI = class {
         // Test if the normalized tag matches
         const matches = regex.test(normalizedTag);
         
-        console.log(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
+        Logger.debug(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
         
         return matches;
     }
@@ -134,9 +135,9 @@ export const GitHubAPI = class {
                                 const response = decoder.decode(data);
                                 const releases = JSON.parse(response);
                                 
-                                console.log(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
+                                Logger.debug(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
                                 if (releases.length > 0) {
-                                    console.log(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
+                                    Logger.debug(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
                                 }
                                 
                                 // Filter releases by version pattern
@@ -144,7 +145,7 @@ export const GitHubAPI = class {
                                     return this._matchesVersionPattern(release.tag_name, versionFilter);
                                 });
                                 
-                                console.log(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
+                                Logger.debug(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
                                 
                                 if (matchingReleases.length === 0) {
                                     resolve(null); // No matching releases found

@@ -5,6 +5,7 @@ import St from "gi://St";
 import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
+import * as Logger from "./logger.js";
 
 // ============================================================================
 // ReleaseMonitorIndicator - Status bar indicator
@@ -98,7 +99,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         // Project list - reload config to get latest data
         this._extension.configManager.load();
         const projects = this._extension.configManager.getProjects();
-        console.log(`_buildMenu: Found ${projects.length} projects`);
+        Logger.debug(`_buildMenu: Found ${projects.length} projects`);
         if (projects.length === 0) {
             const emptyItem = new PopupMenu.PopupMenuItem('No projects monitored', {
                 reactive: false
@@ -113,7 +114,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
                 const releaseVersion = project.lastRelease 
                     ? (project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name || 'unknown')
                     : 'null';
-                console.log(`_buildMenu: Project ${identifier} (${source}), lastRelease: ${releaseVersion}`);
+                Logger.debug(`_buildMenu: Project ${identifier} (${source}), lastRelease: ${releaseVersion}`);
                 this._addProjectItem(project);
             });
         }
@@ -173,7 +174,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         
         // Clear the notification icon when window is opened (user has seen the updates)
         this.updateIcon(false);
-        console.log('_openReportWindow: Cleared notification icon');
+        Logger.info('_openReportWindow: Cleared notification icon');
         
         // Check if window is already open - if so, just skip (can't bring to front from separate process)
         if (this._reportWindowProcessId) {
@@ -182,11 +183,11 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             const procFile = Gio.File.new_for_path(procPath);
             if (procFile.query_exists(null)) {
                 // Process exists, don't create another window
-                console.log('_openReportWindow: Window already open, skipping');
+                Logger.info('_openReportWindow: Window already open, skipping');
                 return;
             } else {
                 // Process doesn't exist, clear the ID and continue
-                console.log('_openReportWindow: Previous window process no longer exists, clearing ID');
+                Logger.info('_openReportWindow: Previous window process no longer exists, clearing ID');
                 this._reportWindowProcessId = null;
             }
         }
@@ -208,7 +209,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
                 throw new Error(`Report window script not found: ${reportWindowScript}`);
             }
             
-            console.log(`_openReportWindow: Launching ${reportWindowScript} with config file argument`);
+            Logger.info(`_openReportWindow: Launching ${reportWindowScript} with config file argument`);
             
             const [success, pid] = GLib.spawn_async(
                 null,
@@ -224,19 +225,18 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
             
             // Track the process ID to prevent multiple windows
             this._reportWindowProcessId = pid;
-            console.log(`_openReportWindow: Process launched with PID ${pid}`);
+            Logger.info(`_openReportWindow: Process launched with PID ${pid}`);
             
             // Monitor process to clear the ID when it exits
             GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, status) => {
-                console.log(`_openReportWindow: Process ${pid} exited with status ${status}`);
+                Logger.info(`_openReportWindow: Process ${pid} exited with status ${status}`);
                 this._reportWindowProcessId = null;
                 // No need to clean up - we're using the config file directly now
                 GLib.spawn_close_pid(pid);
                 return GLib.SOURCE_REMOVE;
             });
         } catch (e) {
-            console.error(`Error launching report window: ${e.message}`);
-            console.error(`Stack trace: ${e.stack}`);
+            Logger.error("Error launching report window", e);
             Main.notify('Error', `Failed to open report window: ${e.message}`);
         }
     }
@@ -245,11 +245,11 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         // Open the Extensions app to the preferences for this extension
         try {
             const extensionUuid = this._extension.metadata.uuid;
-            console.log(`_showAddDialog: Opening preferences for ${extensionUuid}`);
+            Logger.info(`_showAddDialog: Opening preferences for ${extensionUuid}`);
             
             // Use GLib.spawn_async to get PID for tracking
             const command = `gnome-extensions prefs ${extensionUuid}`;
-            console.log(`_showAddDialog: Executing: ${command}`);
+            Logger.info(`_showAddDialog: Executing: ${command}`);
             
             try {
                 const [success, pid] = GLib.spawn_async(
@@ -263,11 +263,11 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
                 if (success) {
                     // Track the process ID
                     this._extension._prefsProcessId = pid;
-                    console.log(`_showAddDialog: Preferences process launched with PID ${pid}`);
+                    Logger.info(`_showAddDialog: Preferences process launched with PID ${pid}`);
                     
                     // Monitor process to clear the ID when it exits
                     GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, status) => {
-                        console.log(`_showAddDialog: Preferences process ${pid} exited with status ${status}`);
+                        Logger.info(`_showAddDialog: Preferences process ${pid} exited with status ${status}`);
                         if (this._extension) {
                             this._extension._prefsProcessId = null;
                         }
@@ -276,21 +276,21 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
                     });
                     return;
                 } else {
-                    console.error(`_showAddDialog: Failed to launch preferences`);
+                    Logger.error(`_showAddDialog: Failed to launch preferences`);
                 }
             } catch (spawnError) {
-                console.error(`_showAddDialog: spawn_async failed: ${spawnError.message}`);
+                Logger.error(`_showAddDialog: spawn_async failed: ${spawnError.message}`);
             }
         } catch (e) {
-            console.error(`_showAddDialog: Error: ${e.message}`);
+            Logger.error(`_showAddDialog: Error: ${e.message}`);
         }
         
         // Fallback: try to open Extensions app directly
         try {
-            console.log(`_showAddDialog: Trying fallback - opening Extensions app`);
+            Logger.info(`_showAddDialog: Trying fallback - opening Extensions app`);
             GLib.spawn_command_line_async('gnome-extensions');
         } catch (e) {
-            console.error(`_showAddDialog: Fallback failed: ${e.message}`);
+            Logger.error(`_showAddDialog: Fallback failed: ${e.message}`);
             // Last resort: show notification
             Main.notify(
                 'Add GitHub Project',
