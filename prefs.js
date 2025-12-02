@@ -8,184 +8,16 @@ imports.gi.versions.Soup = '3.0';
 import {
     ExtensionPreferences,
 } from "resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js";
+import { ConfigManager } from "./configManager.js";
 
-// ============================================================================
-// ConfigManager - Manages project configuration storage
-// ============================================================================
-const ConfigManager = class {
-    constructor() {
-        this.configDir = GLib.get_user_config_dir();
-        this.configFile = Gio.File.new_for_path(
-            GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json'])
-        );
-        this.projects = [];
-        this._ensureConfigDir();
-        this.load();
-    }
+// Simple debug flag for the preferences window
+const DEBUG = false;
 
-    _ensureConfigDir() {
-        const configDirFile = this.configFile.get_parent();
-        if (!configDirFile.query_exists(null)) {
-            configDirFile.make_directory_with_parents(null);
-        }
+function debugLog(message) {
+    if (DEBUG) {
+        console.log(message);
     }
-
-    load() {
-        try {
-            if (this.configFile.query_exists(null)) {
-                const [success, contents] = this.configFile.load_contents(null);
-                if (success) {
-                    const decoder = new TextDecoder('utf-8');
-                    const jsonStr = decoder.decode(contents);
-                    this.projects = JSON.parse(jsonStr);
-                }
-            }
-        } catch (e) {
-            console.error(`Error loading config: ${e}`);
-            this.projects = [];
-        }
-    }
-
-    save() {
-        try {
-            const encoder = new TextEncoder();
-            const jsonStr = JSON.stringify(this.projects, null, 2);
-            const data = encoder.encode(jsonStr);
-            this.configFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
-        } catch (e) {
-            console.error(`Error saving config: ${e}`);
-        }
-    }
-
-    addProject(owner, repo, versionFilter = null, source = 'github', projectName = null) {
-        const project = {
-            source: source || 'github',
-            owner: owner || null,
-            repo: repo || null,
-            projectName: projectName || null, // For release-monitoring.org
-            versionFilter: versionFilter || null,
-            lastRelease: null,
-            lastChecked: null
-        };
-        this.projects.push(project);
-        this.save();
-        return project;
-    }
-    
-    updateProjectVersionFilter(owner, repo, newVersionFilter, source = 'github', currentVersionFilter = null) {
-        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
-        const normalizedCurrentFilter = (currentVersionFilter === null || currentVersionFilter === undefined || currentVersionFilter === '') ? null : currentVersionFilter;
-        
-        const project = this.projects.find(
-            p => {
-                if (source === 'release-monitoring') {
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedCurrentFilter;
-                } else {
-                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedCurrentFilter;
-                }
-            }
-        );
-        if (project) {
-            project.versionFilter = newVersionFilter || null;
-            this.save();
-        }
-    }
-
-    removeProject(owner, repo, source = 'github', versionFilter = null) {
-        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
-        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
-        
-        console.log(`removeProject: Removing project owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
-        const beforeCount = this.projects.length;
-        
-        if (source === 'release-monitoring') {
-            this.projects = this.projects.filter(
-                p => {
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    const matches = p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedFilter;
-                    if (matches) {
-                        console.log(`removeProject: Filtering out release-monitoring project: ${p.projectName} (filter: ${pFilter})`);
-                    }
-                    return !matches;
-                }
-            );
-        } else {
-            // For GitHub projects, also handle projects without source field (backward compatibility)
-            // Projects with null/undefined source are treated as GitHub projects
-            this.projects = this.projects.filter(
-                p => {
-                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    const matches = isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
-                    if (matches) {
-                        console.log(`removeProject: Filtering out GitHub project: ${p.owner}/${p.repo} (source was: ${p.source}, filter: ${pFilter})`);
-                    }
-                    return !matches;
-                }
-            );
-        }
-        
-        const afterCount = this.projects.length;
-        console.log(`removeProject: Project count changed from ${beforeCount} to ${afterCount}`);
-        if (beforeCount === afterCount) {
-            console.error(`removeProject: WARNING - Project was not removed! Check if project exists with owner=${owner}, repo=${repo}, source=${source}, versionFilter=${normalizedFilter}`);
-        }
-        this.save();
-        console.log(`removeProject: Config saved after removal`);
-    }
-
-    updateProjectRelease(owner, repo, release, source = 'github', projectName = null, versionFilter = null, isNewRelease = false) {
-        // Normalize versionFilter: null, undefined, and empty string are treated as "no filter"
-        const normalizedFilter = (versionFilter === null || versionFilter === undefined || versionFilter === '') ? null : versionFilter;
-        
-        let project;
-        if (source === 'release-monitoring') {
-            project = this.projects.find(
-                p => {
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
-                }
-            );
-        } else {
-            // For GitHub projects, also handle projects without source field (backward compatibility)
-            project = this.projects.find(
-                p => {
-                    const isGitHub = (p.source === 'github' || !p.source || p.source === null);
-                    const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
-                    return isGitHub && p.owner === owner && p.repo === repo && pFilter === normalizedFilter;
-                }
-            );
-        }
-        if (project) {
-            // Ensure the release object has all necessary fields
-            const releaseToSave = {
-                tag_name: release.tag_name || release.version || release.name,
-                version: release.version || release.tag_name || release.name,
-                name: release.name || release.tag_name || release.version,
-                published_at: release.published_at || null,
-                html_url: release.html_url || null,
-                body: release.body || null
-            };
-            project.lastRelease = releaseToSave;
-            project.lastChecked = new Date().toISOString();
-            // Set hasNewRelease flag: true if this is a new release, false otherwise
-            project.hasNewRelease = isNewRelease;
-            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.log(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
-            this.save();
-        } else {
-            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
-            console.error(`updateProjectRelease: WARNING - Project not found! ${identifier} (source: ${source}, filter: ${normalizedFilter})`);
-        }
-    }
-
-    getProjects() {
-        return this.projects;
-    }
-};
+}
 
 // ============================================================================
 // GitHubAPI - Handles GitHub API interactions
@@ -229,7 +61,7 @@ const GitHubAPI = class {
         // Test if the normalized tag matches
         const matches = regex.test(normalizedTag);
         
-        console.log(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
+        debugLog(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
         
         return matches;
     }
@@ -321,9 +153,9 @@ const GitHubAPI = class {
                                 const response = decoder.decode(data);
                                 const releases = JSON.parse(response);
                                 
-                                console.log(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
+                                debugLog(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
                                 if (releases.length > 0) {
-                                    console.log(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
+                                    debugLog(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
                                 }
                                 
                                 // Filter releases by version pattern
@@ -331,7 +163,7 @@ const GitHubAPI = class {
                                     return this._matchesVersionPattern(release.tag_name, versionFilter);
                                 });
                                 
-                                console.log(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
+                                debugLog(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
                                 
                                 if (matchingReleases.length === 0) {
                                     resolve(null); // No matching releases found
@@ -380,7 +212,7 @@ const GitHubAPI = class {
                         session.send_and_read_finish(result);
                         const status = message.get_status();
                         
-                        console.log(`checkRepository: ${url} -> status ${status}`);
+                        debugLog(`checkRepository: ${url} -> status ${status}`);
                         
                         if (status === 200) {
                             resolve(true);
@@ -727,10 +559,12 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         try {
             apiToken = settings.get_string('release-monitoring-api-token') || null;
         } catch (e) {
-            console.log(`Could not read release-monitoring-api-token from GSettings: ${e.message}`);
-            // Fallback: check temporary settings file if GSettings doesn't have it yet
+            debugLog(`Could not read release-monitoring-api-token from GSettings: ${e.message}`);
+            // Fallback: check settings file in signals directory if GSettings doesn't have it yet
             try {
-                const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
+                const configDir = GLib.get_user_config_dir();
+                const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+                const settingsFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'settings-update.json']));
                 if (settingsFile.query_exists(null)) {
                     const [success, contents] = settingsFile.load_contents(null);
                     if (success) {
@@ -739,18 +573,18 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                         const settingsData = JSON.parse(jsonStr);
                         if (settingsData.apiToken) {
                             apiToken = settingsData.apiToken;
-                            console.log(`Using API token from temporary settings file`);
+                            debugLog(`Using API token from temporary settings file`);
                         }
                     }
                 }
             } catch (e2) {
-                console.log(`Could not read API token from temporary file: ${e2.message}`);
+                debugLog(`Could not read API token from temporary file: ${e2.message}`);
             }
         }
         if (!apiToken || !apiToken.trim()) {
-            console.log(`No API token found - release-monitoring.org requests may be blocked`);
+            debugLog(`No API token found - release-monitoring.org requests may be blocked`);
         } else {
-            console.log(`Using API token: ${apiToken.substring(0, 4)}...${apiToken.substring(apiToken.length - 4)}`);
+            debugLog(`Using API token: ${apiToken.substring(0, 4)}...${apiToken.substring(apiToken.length - 4)}`);
         }
         const releaseMonitoringAPI = new ReleaseMonitoringAPI(apiToken);
         
@@ -1102,10 +936,10 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                             
                             // Check for release immediately
                             try {
-                                console.log(`Fetching latest release for: ${projectName}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                                debugLog(`Fetching latest release for: ${projectName}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                                 const release = await releaseMonitoringAPI.getLatestRelease(projectName, versionFilter, githubAPI);
                                 if (release) {
-                                    console.log(`Found release: ${release.version || release.tag_name}`);
+                                    debugLog(`Found release: ${release.version || release.tag_name}`);
                                     configManager.updateProjectRelease(null, null, release, source, projectName, versionFilter, false);
                                     this._loadProjects(group);
                                 } else {
@@ -1181,19 +1015,19 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                     if (owner && repo) {
                         // Validate repository exists
                         try {
-                            console.log(`Checking repository: ${owner}/${repo}`);
+                            debugLog(`Checking repository: ${owner}/${repo}`);
                             const exists = await githubAPI.checkRepository(owner, repo);
-                            console.log(`Repository check result: ${exists}`);
+                            debugLog(`Repository check result: ${exists}`);
                             if (exists) {
                                 configManager.addProject(owner, repo, versionFilter, source);
                                 this._loadProjects(group);
                                 
                                 // Check for release immediately
                                 try {
-                                    console.log(`Fetching latest release for: ${owner}/${repo}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                                    debugLog(`Fetching latest release for: ${owner}/${repo}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                                     const release = await githubAPI.getLatestRelease(owner, repo, versionFilter);
                                     if (release) {
-                                        console.log(`Found release: ${release.tag_name}`);
+                                        debugLog(`Found release: ${release.tag_name}`);
                                         configManager.updateProjectRelease(owner, repo, release, source, null, versionFilter, false);
                                         this._loadProjects(group);
                                     } else {

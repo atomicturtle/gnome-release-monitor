@@ -8,7 +8,32 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Adw from 'gi://Adw';
 
+// Logger wrapper for consistent error logging
+// Since report-window.js is a standalone script, we use a simple Logger
+// that matches the logger.js interface (error(msg, err), warn(msg), info(msg), debug(msg))
+const Logger = {
+    error: (msg, err) => {
+        // Format error message consistently with logger.js
+        const fullMessage = err && err.stack
+            ? `${String(msg)}: ${err.message}\n${err.stack}`
+            : String(msg);
+        console.error(`[ReleaseMonitor][ERROR] ${fullMessage}`);
+    },
+    warn: (msg) => console.error(`[ReleaseMonitor][WARN] ${String(msg)}`),
+    info: (msg) => console.log(`[ReleaseMonitor][INFO] ${String(msg)}`),
+    debug: (msg) => console.log(`[ReleaseMonitor][DEBUG] ${String(msg)}`)
+};
+
 Adw.init();
+
+// Simple debug flag for this helper window; set to true only when debugging
+const DEBUG = false;
+
+function debugLog(message) {
+    if (DEBUG) {
+        console.log(message);
+    }
+}
 
 // Read projects and version from command line arguments
 // Expected: report-window.js <projects-json-file> <version>
@@ -28,11 +53,11 @@ if (args[0] === 'config') {
     const configDir = GLib.get_user_config_dir();
     const configPath = GLib.build_filenamev([configDir, 'release-monitor', 'projects.json']);
     projectsFile = Gio.File.new_for_path(configPath);
-    console.log(`Using config file: ${configPath}`);
+    debugLog(`Using config file: ${configPath}`);
 } else {
     // Use the temporary file passed as argument (for backward compatibility)
     projectsFile = Gio.File.new_for_path(args[0]);
-    console.log(`Using temporary file: ${args[0]}`);
+    debugLog(`Using temporary file: ${args[0]}`);
 }
 
 // Read projects from JSON file
@@ -45,11 +70,11 @@ const loadProjects = () => {
             const decoder = new TextDecoder('utf-8');
             const jsonData = decoder.decode(contents);
             projects = JSON.parse(jsonData);
-            console.log(`Loaded ${projects.length} projects from file`);
+            debugLog(`Loaded ${projects.length} projects from file`);
             return true;
         }
     } catch (e) {
-        console.error(`Error reading projects file: ${e.message}`);
+        Logger.error(`Error reading projects file: ${e.message}`, e);
         return false;
     }
     return false;
@@ -61,10 +86,10 @@ const saveProjects = () => {
         const jsonData = JSON.stringify(projects, null, 2);
         const data = encoder.encode(jsonData);
         projectsFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
-        console.log(`Saved ${projects.length} projects to file`);
+        debugLog(`Saved ${projects.length} projects to file`);
         return true;
     } catch (e) {
-        console.error(`Error saving projects file: ${e.message}`);
+        Logger.error(`Error saving projects file: ${e.message}`, e);
         return false;
     }
 };
@@ -96,7 +121,7 @@ app.connect('activate', () => {
 
 // Wait for application startup before creating window
 app.connect('startup', () => {
-    console.log('Application startup - creating window...');
+    debugLog('Application startup - creating window...');
     window = new Adw.ApplicationWindow({
         application: app
     });
@@ -154,7 +179,7 @@ app.connect('startup', () => {
         styleManager.set_color_scheme(Adw.ColorScheme.DEFAULT);
     }
     
-    console.log('Creating mainBox...');
+    debugLog('Creating mainBox...');
     const mainBox = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
         spacing: 10,
@@ -172,7 +197,7 @@ app.connect('startup', () => {
     });
     reportTitleLabel.set_visible(true);
     mainBox.append(reportTitleLabel);
-    console.log('Title label added to mainBox');
+    debugLog('Title label added to mainBox');
     
     if (projects.length === 0) {
         const emptyLabel = new Gtk.Label({
@@ -428,7 +453,7 @@ app.connect('startup', () => {
         scrolled.set_child(tableBox);
         scrolled.set_visible(true);
         mainBox.append(scrolled);
-        console.log(`Scrolled window with table added to mainBox, projects count: ${projects.length}`);
+        debugLog(`Scrolled window with table added to mainBox, projects count: ${projects.length}`);
         
         // Add reload button to header bar (left side) - must be inside this block to access rebuildTable
         const reloadButton = new Gtk.Button({
@@ -438,10 +463,16 @@ app.connect('startup', () => {
         
         reloadButton.connect('clicked', () => {
             // First, trigger the extension to check for updates
-            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+            const configDir = GLib.get_user_config_dir();
+            const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+            const signalDirFile = Gio.File.new_for_path(signalDir);
+            if (!signalDirFile.query_exists(null)) {
+                signalDirFile.make_directory_with_parents(null);
+            }
+            const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'reload']));
             try {
-                signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
-                console.log('Reload signal file created');
+                signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
+                debugLog('Reload signal file created');
                 
                 // Store initial project count and identifiers to detect changes
                 const initialProjectCount = projects.length;
@@ -474,7 +505,7 @@ app.connect('startup', () => {
                         
                         // Refresh if: count changed, IDs changed, releases found, or max attempts reached
                         if (projectCountChanged || projectIdsChanged || hasReleases || attempts >= maxAttempts) {
-                            console.log(`Reload: Refreshing - count changed: ${projectCountChanged}, IDs changed: ${projectIdsChanged}, has releases: ${hasReleases}, attempts: ${attempts}`);
+                            debugLog(`Reload: Refreshing - count changed: ${projectCountChanged}, IDs changed: ${projectIdsChanged}, has releases: ${hasReleases}, attempts: ${attempts}`);
                             rebuildTable(sortColumn, sortAscending);
                             return false; // Stop checking
                         }
@@ -483,7 +514,7 @@ app.connect('startup', () => {
                         return true; // Continue checking
                     }
                     // Final refresh even if no changes detected
-                    console.log(`Reload: Final refresh after ${attempts} attempts`);
+                    debugLog(`Reload: Final refresh after ${attempts} attempts`);
                     rebuildTable(sortColumn, sortAscending);
                     return false;
                 };
@@ -491,7 +522,7 @@ app.connect('startup', () => {
                 // Check every 500ms for up to 5 seconds (increased from 2.5)
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, checkAndRefresh);
             } catch (e) {
-                console.log(`Could not create reload signal file: ${e.message}`);
+                Logger.error(`Could not create reload signal file: ${e.message}`, e);
             }
         });
         headerBar.pack_start(reloadButton);
@@ -505,12 +536,18 @@ app.connect('startup', () => {
         });
         
         reloadButtonEmpty.connect('clicked', () => {
-            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+            const configDir = GLib.get_user_config_dir();
+            const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+            const signalDirFile = Gio.File.new_for_path(signalDir);
+            if (!signalDirFile.query_exists(null)) {
+                signalDirFile.make_directory_with_parents(null);
+            }
+            const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'reload']));
             try {
-                signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
-                console.log('Reload signal file created (empty projects case)');
+                signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
+                debugLog('Reload signal file created (empty projects case)');
             } catch (e) {
-                console.log(`Could not create reload signal file: ${e.message}`);
+                Logger.error(`Could not create reload signal file: ${e.message}`, e);
             }
         });
         headerBar.pack_start(reloadButtonEmpty);
@@ -522,13 +559,18 @@ app.connect('startup', () => {
         tooltip_text: 'Settings'
     });
     settingsButton.connect('clicked', () => {
-        // Trigger settings via D-Bus or file signal
-        // For now, write a signal file that the extension can detect
-        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-open-settings');
+        // Trigger settings via signal file
+        const configDir = GLib.get_user_config_dir();
+        const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+        const signalDirFile = Gio.File.new_for_path(signalDir);
+        if (!signalDirFile.query_exists(null)) {
+            signalDirFile.make_directory_with_parents(null);
+        }
+        const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'open-settings']));
         try {
-            signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+            signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
         } catch (e) {
-            console.log(`Could not create signal file: ${e.message}`);
+            Logger.error(`Could not create signal file: ${e.message}`, e);
         }
     });
     headerBar.pack_start(settingsButton);
@@ -627,8 +669,7 @@ try {
     const exitCode = app.run([]);
     console.log(`Application exited with code: ${exitCode}`);
 } catch (e) {
-    console.error(`Error in application: ${e.message}`);
-    console.error(e.stack);
+    Logger.error(`Error in application: ${e.message}`, e);
     // Exit with error code
     imports.system.exit(1);
 }

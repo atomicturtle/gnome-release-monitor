@@ -255,15 +255,24 @@ app.connect('startup', () => {
             apiToken: newApiToken
         };
         
-        const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
+        // Use signals directory in user config
+        const configDir = GLib.get_user_config_dir();
+        const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+        const signalDirFile = Gio.File.new_for_path(signalDir);
+        if (!signalDirFile.query_exists(null)) {
+            signalDirFile.make_directory_with_parents(null);
+        }
+        
         try {
+            // Write settings data file
+            const settingsFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'settings-update.json']));
             const encoder = new TextEncoder();
             const data = encoder.encode(JSON.stringify(settingsData));
             settingsFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
             
             // Create signal file
-            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-update-settings');
-            signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+            const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'update-settings']));
+            signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
             
             console.log('Settings saved to signal file');
             app.quit();
