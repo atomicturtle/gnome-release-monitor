@@ -1,5 +1,5 @@
-import Soup from "gi://Soup";
 imports.gi.versions.Soup = '3.0';
+import Soup from "gi://Soup";
 import GLib from "gi://GLib";
 import * as Logger from "./logger.js";
 
