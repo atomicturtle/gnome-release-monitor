@@ -149,6 +149,16 @@ export const ConfigManager = class {
             Logger.info("Config saved successfully");
         } catch (e) {
             Logger.error("Error saving config", e);
+            // Attempt to clean up the temporary file if it exists
+            try {
+                const tmpPath = GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json.tmp']);
+                const tmpFile = Gio.File.new_for_path(tmpPath);
+                if (tmpFile.query_exists(null)) {
+                    tmpFile.delete(null);
+                }
+            } catch (cleanupErr) {
+                Logger.warn("ConfigManager: failed to clean up temp file: " + cleanupErr.message);
+            }
         } finally {
             this._releaseLock();
         }
