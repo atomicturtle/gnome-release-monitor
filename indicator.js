@@ -179,6 +179,7 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         // Check if window is already open - if so, just skip (can't bring to front from separate process)
         if (this._reportWindowProcessId) {
             // Check if the process is still running by checking /proc
+            // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
             const procPath = `/proc/${this._reportWindowProcessId}`;
             const procFile = Gio.File.new_for_path(procPath);
             if (procFile.query_exists(null)) {

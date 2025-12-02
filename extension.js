@@ -1,10 +1,7 @@
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
-import Clutter from "gi://Clutter";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
-import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
-import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as MessageTray from "resource:///org/gnome/shell/ui/messageTray.js";
 import { ConfigManager } from "./configManager.js";
 import { GitHubAPI } from "./githubAPI.js";
@@ -380,6 +377,7 @@ export default class ReleaseMonitorExtension extends Extension {
         // Check if settings window is already open
         if (this._settingsWindowProcessId) {
             // Check if the process is still running
+            // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
             const procPath = `/proc/${this._settingsWindowProcessId}`;
             const procFile = Gio.File.new_for_path(procPath);
             if (procFile.query_exists(null)) {
@@ -539,6 +537,7 @@ export default class ReleaseMonitorExtension extends Extension {
         const reportWindowPid = this.indicator ? this.indicator._reportWindowProcessId : null;
         if (reportWindowPid) {
             try {
+                // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
                 const procPath = `/proc/${reportWindowPid}`;
                 const procFile = Gio.File.new_for_path(procPath);
                 if (procFile.query_exists(null)) {
@@ -579,6 +578,7 @@ export default class ReleaseMonitorExtension extends Extension {
         
         if (this._settingsWindowProcessId) {
             try {
+                // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
                 const procPath = `/proc/${this._settingsWindowProcessId}`;
                 const procFile = Gio.File.new_for_path(procPath);
                 if (procFile.query_exists(null)) {
@@ -616,6 +616,7 @@ export default class ReleaseMonitorExtension extends Extension {
         // any gnome-extensions processes that might be related to our extension.
         if (this._prefsProcessId) {
             try {
+                // Note: /proc is Linux-specific, but GNOME Shell extensions only run on Linux
                 const procPath = `/proc/${this._prefsProcessId}`;
                 const procFile = Gio.File.new_for_path(procPath);
                 if (procFile.query_exists(null)) {
