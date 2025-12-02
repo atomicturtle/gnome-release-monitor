@@ -694,9 +694,13 @@ export default class ReleaseMonitorExtension extends Extension {
         // and may remain open even after we kill related processes.
         try {
             const extensionUuid = this.metadata.uuid;
-            // Use pgrep to find processes with our extension UUID in the command line
+            // Use pgrep with a more specific pattern to avoid false matches:
+            // - Must contain "gnome-extensions"
+            // - Must contain "prefs" (for preferences window)
+            // - Must contain the extension UUID
+            // This ensures we only match the preferences window for our specific extension
             const [success, stdout] = GLib.spawn_command_line_sync(
-                `pgrep -f "gnome-extensions.*${extensionUuid}" || true`
+                `pgrep -f "gnome-extensions.*prefs.*${extensionUuid}" || true`
             );
             if (success && stdout) {
                 const decoder = new TextDecoder('utf-8');
@@ -706,7 +710,28 @@ export default class ReleaseMonitorExtension extends Extension {
                     for (const pid of pids) {
                         const pidNum = parseInt(pid.trim(), 10);
                         if (!isNaN(pidNum) && pidNum > 0) {
-                            this._terminateProcess(pidNum, `gnome-extensions (${extensionUuid})`);
+                            // Additional safety: verify the command line contains our UUID
+                            // before terminating (defense in depth)
+                            try {
+                                const cmdlinePath = `/proc/${pidNum}/cmdline`;
+                                const cmdlineFile = Gio.File.new_for_path(cmdlinePath);
+                                if (cmdlineFile.query_exists(null)) {
+                                    const [readSuccess, cmdlineContents] = cmdlineFile.load_contents(null);
+                                    if (readSuccess) {
+                                        const cmdlineDecoder = new TextDecoder('utf-8');
+                                        const cmdline = cmdlineDecoder.decode(cmdlineContents);
+                                        // Verify UUID is actually in the command line
+                                        if (cmdline.includes(extensionUuid) && cmdline.includes('prefs')) {
+                                            this._terminateProcess(pidNum, `gnome-extensions prefs (${extensionUuid})`);
+                                        } else {
+                                            Logger.debug(`Skipping process ${pidNum} - UUID not found in command line`);
+                                        }
+                                    }
+                                }
+                            } catch (verifyError) {
+                                // If verification fails, skip this process to be safe
+                                Logger.debug(`Could not verify process ${pidNum}: ${verifyError.message}`);
+                            }
                         }
                     }
                 }
