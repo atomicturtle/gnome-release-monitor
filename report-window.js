@@ -447,9 +447,15 @@ app.connect('startup', () => {
         
         reloadButton.connect('clicked', () => {
             // First, trigger the extension to check for updates
-            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+            const configDir = GLib.get_user_config_dir();
+            const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+            const signalDirFile = Gio.File.new_for_path(signalDir);
+            if (!signalDirFile.query_exists(null)) {
+                signalDirFile.make_directory_with_parents(null);
+            }
+            const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'reload']));
             try {
-                signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+                signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
                 debugLog('Reload signal file created');
                 
                 // Store initial project count and identifiers to detect changes
@@ -514,9 +520,15 @@ app.connect('startup', () => {
         });
         
         reloadButtonEmpty.connect('clicked', () => {
-            const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
+            const configDir = GLib.get_user_config_dir();
+            const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+            const signalDirFile = Gio.File.new_for_path(signalDir);
+            if (!signalDirFile.query_exists(null)) {
+                signalDirFile.make_directory_with_parents(null);
+            }
+            const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'reload']));
             try {
-                signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+                signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
                 debugLog('Reload signal file created (empty projects case)');
             } catch (e) {
                 console.error(`Could not create reload signal file: ${e.message}`);
@@ -531,11 +543,16 @@ app.connect('startup', () => {
         tooltip_text: 'Settings'
     });
     settingsButton.connect('clicked', () => {
-        // Trigger settings via D-Bus or file signal
-        // For now, write a signal file that the extension can detect
-        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-open-settings');
+        // Trigger settings via signal file
+        const configDir = GLib.get_user_config_dir();
+        const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+        const signalDirFile = Gio.File.new_for_path(signalDir);
+        if (!signalDirFile.query_exists(null)) {
+            signalDirFile.make_directory_with_parents(null);
+        }
+        const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'open-settings']));
         try {
-            signalFile.replace_contents('1', null, false, Gio.FileCreateFlags.NONE, null);
+            signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
         } catch (e) {
             console.log(`Could not create signal file: ${e.message}`);
         }

@@ -61,7 +61,7 @@ const GitHubAPI = class {
         // Test if the normalized tag matches
         const matches = regex.test(normalizedTag);
         
-        console.log(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
+        debugLog(`_matchesVersionPattern: tag="${tagName}" (normalized: "${normalizedTag}") pattern="${pattern}" (normalized: "${normalizedPattern}") regex="${regex}" -> ${matches}`);
         
         return matches;
     }
@@ -153,9 +153,9 @@ const GitHubAPI = class {
                                 const response = decoder.decode(data);
                                 const releases = JSON.parse(response);
                                 
-                                console.log(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
+                                debugLog(`getLatestReleaseWithFilter: Found ${releases.length} total releases for ${owner}/${repo}`);
                                 if (releases.length > 0) {
-                                    console.log(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
+                                    debugLog(`getLatestReleaseWithFilter: First few tag names: ${releases.slice(0, 5).map(r => r.tag_name).join(', ')}`);
                                 }
                                 
                                 // Filter releases by version pattern
@@ -163,7 +163,7 @@ const GitHubAPI = class {
                                     return this._matchesVersionPattern(release.tag_name, versionFilter);
                                 });
                                 
-                                console.log(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
+                                debugLog(`getLatestReleaseWithFilter: Found ${matchingReleases.length} matching releases for pattern "${versionFilter}"`);
                                 
                                 if (matchingReleases.length === 0) {
                                     resolve(null); // No matching releases found
@@ -212,7 +212,7 @@ const GitHubAPI = class {
                         session.send_and_read_finish(result);
                         const status = message.get_status();
                         
-                        console.log(`checkRepository: ${url} -> status ${status}`);
+                        debugLog(`checkRepository: ${url} -> status ${status}`);
                         
                         if (status === 200) {
                             resolve(true);
@@ -560,9 +560,11 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
             apiToken = settings.get_string('release-monitoring-api-token') || null;
         } catch (e) {
             debugLog(`Could not read release-monitoring-api-token from GSettings: ${e.message}`);
-            // Fallback: check temporary settings file if GSettings doesn't have it yet
+            // Fallback: check settings file in signals directory if GSettings doesn't have it yet
             try {
-                const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
+                const configDir = GLib.get_user_config_dir();
+                const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+                const settingsFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'settings-update.json']));
                 if (settingsFile.query_exists(null)) {
                     const [success, contents] = settingsFile.load_contents(null);
                     if (success) {
@@ -934,10 +936,10 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                             
                             // Check for release immediately
                             try {
-                                console.log(`Fetching latest release for: ${projectName}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                                debugLog(`Fetching latest release for: ${projectName}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                                 const release = await releaseMonitoringAPI.getLatestRelease(projectName, versionFilter, githubAPI);
                                 if (release) {
-                                    console.log(`Found release: ${release.version || release.tag_name}`);
+                                    debugLog(`Found release: ${release.version || release.tag_name}`);
                                     configManager.updateProjectRelease(null, null, release, source, projectName, versionFilter, false);
                                     this._loadProjects(group);
                                 } else {
@@ -1013,19 +1015,19 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                     if (owner && repo) {
                         // Validate repository exists
                         try {
-                            console.log(`Checking repository: ${owner}/${repo}`);
+                            debugLog(`Checking repository: ${owner}/${repo}`);
                             const exists = await githubAPI.checkRepository(owner, repo);
-                            console.log(`Repository check result: ${exists}`);
+                            debugLog(`Repository check result: ${exists}`);
                             if (exists) {
                                 configManager.addProject(owner, repo, versionFilter, source);
                                 this._loadProjects(group);
                                 
                                 // Check for release immediately
                                 try {
-                                    console.log(`Fetching latest release for: ${owner}/${repo}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
+                                    debugLog(`Fetching latest release for: ${owner}/${repo}${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                                     const release = await githubAPI.getLatestRelease(owner, repo, versionFilter);
                                     if (release) {
-                                        console.log(`Found release: ${release.tag_name}`);
+                                        debugLog(`Found release: ${release.tag_name}`);
                                         configManager.updateProjectRelease(owner, repo, release, source, null, versionFilter, false);
                                         this._loadProjects(group);
                                     } else {

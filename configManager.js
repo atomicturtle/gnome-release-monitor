@@ -11,6 +11,9 @@ export const ConfigManager = class {
         this.configFile = Gio.File.new_for_path(
             GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json'])
         );
+        this.lockFile = Gio.File.new_for_path(
+            GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json.lock'])
+        );
         this.projects = [];
         this._ensureConfigDir();
         this.load();
@@ -20,6 +23,76 @@ export const ConfigManager = class {
         const configDirFile = this.configFile.get_parent();
         if (!configDirFile.query_exists(null)) {
             configDirFile.make_directory_with_parents(null);
+        }
+    }
+
+    // Signal directory helpers for inter-process communication
+    _getSignalDirectory() {
+        const signalDirPath = GLib.build_filenamev([this.configDir, 'release-monitor', 'signals']);
+        return Gio.File.new_for_path(signalDirPath);
+    }
+
+    _ensureSignalDir() {
+        const signalDir = this._getSignalDirectory();
+        if (!signalDir.query_exists(null)) {
+            signalDir.make_directory_with_parents(null);
+        }
+    }
+
+    getSignalFile(signalName) {
+        this._ensureSignalDir();
+        const signalDir = this._getSignalDirectory();
+        return signalDir.get_child(signalName);
+    }
+
+    createSignal(signalName) {
+        try {
+            const signalFile = this.getSignalFile(signalName);
+            // Create empty file atomically
+            signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
+            Logger.debug(`Signal created: ${signalName}`);
+            return true;
+        } catch (e) {
+            Logger.error(`Failed to create signal ${signalName}`, e);
+            return false;
+        }
+    }
+
+    _acquireLock(timeoutMs = 2000) {
+        const start = GLib.get_monotonic_time();
+        const timeoutUs = timeoutMs * 1000;
+
+        while (true) {
+            try {
+                // Try to create lock file exclusively; fail if it exists
+                if (!this.lockFile.query_exists(null)) {
+                    const outputStream = this.lockFile.create(Gio.FileCreateFlags.NONE, null);
+                    outputStream.close(null);
+                    return true;
+                }
+            } catch (e) {
+                // If creation fails for reasons other than already exists, log and continue
+                Logger.debug(`Config lock create failed: ${e.message}`);
+            }
+
+            const elapsed = GLib.get_monotonic_time() - start;
+            if (elapsed > timeoutUs) {
+                Logger.warn("ConfigManager: lock acquisition timed out");
+                return false;
+            }
+
+            // Sleep briefly before retrying (50ms)
+            GLib.usleep(50_000);
+        }
+    }
+
+    _releaseLock() {
+        try {
+            if (this.lockFile.query_exists(null)) {
+                this.lockFile.delete(null);
+            }
+        } catch (e) {
+            Logger.warn(`ConfigManager: failed to release lock: ${e.message}`);
         }
     }
 
@@ -40,18 +113,32 @@ export const ConfigManager = class {
     }
 
     save() {
+        if (!this._acquireLock()) {
+            Logger.error("ConfigManager: could not acquire lock for save()");
+            return;
+        }
+
         try {
             const encoder = new TextEncoder();
             const jsonStr = JSON.stringify(this.projects, null, 2);
             const data = encoder.encode(jsonStr);
-            const [success, etag] = this.configFile.replace_contents(data, null, false, Gio.FileCreateFlags.NONE, null);
-            if (success) {
-                Logger.info("Config saved successfully");
-            } else {
-                Logger.error("Config save failed");
-            }
+
+            // Write to a temporary file first, then atomically replace the target
+            const tmpPath = GLib.build_filenamev([this.configDir, 'release-monitor', 'projects.json.tmp']);
+            const tmpFile = Gio.File.new_for_path(tmpPath);
+
+            const tmpStream = tmpFile.replace(null, false, Gio.FileCreateFlags.NONE, null);
+            tmpStream.write_all(data, null);
+            tmpStream.close(null);
+
+            // Atomic replace of config file with temp file
+            tmpFile.move(this.configFile, Gio.FileCopyFlags.OVERWRITE, null, null);
+
+            Logger.info("Config saved successfully");
         } catch (e) {
             Logger.error("Error saving config", e);
+        } finally {
+            this._releaseLock();
         }
     }
 

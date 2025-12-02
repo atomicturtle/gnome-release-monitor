@@ -32,9 +32,7 @@ export default class ReleaseMonitorExtension extends Extension {
         this.settings = null;
         this._settingsChangedId = null;
         this._wasInStatusArea = false; // Track if indicator was ever added via addToStatusArea
-        this._settingsWatchId = null; // File watcher for settings signal
-        this._settingsUpdateWatchId = null; // File watcher for settings updates
-        this._reloadWatchId = null; // File watcher for reload signal
+        this._signalMonitor = null; // GFileMonitor for signal directory
         this._settingsWindowProcessId = null; // Track settings window process
         this._prefsProcessId = null; // Track preferences window process (gnome-extensions prefs)
     }
@@ -75,14 +73,8 @@ export default class ReleaseMonitorExtension extends Extension {
                 return false; // Don't repeat
             });
             
-            // Watch for settings signal file from report window
-            this._startSettingsWatcher();
-            
-            // Watch for settings updates from settings window
-            this._startSettingsUpdateWatcher();
-            
-            // Watch for reload signal from report window
-            this._startReloadWatcher();
+            // Watch for signals from other processes (reload, settings, etc.)
+            this._startSignalMonitor();
             
             // Start check interval based on settings
             this._restartCheckInterval();
@@ -302,32 +294,91 @@ export default class ReleaseMonitorExtension extends Extension {
         this._addIndicatorToPanel();
     }
 
-    _startSettingsWatcher() {
-        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-open-settings');
+    _startSignalMonitor() {
+        // Get signal directory from config manager
+        const signalsDir = this.configManager._getSignalDirectory();
         
-        // Check for signal file periodically
-        this._settingsWatchId = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            1, // Check every second
-            () => {
+        // Ensure directory exists
+        this.configManager._ensureSignalDir();
+        
+        // Monitor directory for file creation events
+        try {
+            const monitor = signalsDir.monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES,
+                null
+            );
+            
+            monitor.connect('changed', (monitor, file, otherFile, eventType) => {
                 try {
-                    if (signalFile.query_exists(null)) {
-                        // Signal file exists - open settings window
-                        Logger.info('Settings signal file detected, opening settings window...');
-                        this._openSettingsWindow();
-                        // Delete the signal file
-                        try {
-                            signalFile.delete(null);
-                        } catch (e) {
-                            Logger.warn(`Could not delete signal file: ${e.message}`);
+                    // Only handle file creation events
+                    if (eventType === Gio.FileMonitorEvent.CREATED) {
+                        const basename = file.get_basename();
+                        
+                        if (basename === 'reload') {
+                            this._handleReloadSignal(file);
+                        } else if (basename === 'open-settings') {
+                            this._handleOpenSettingsSignal(file);
+                        } else if (basename === 'update-settings') {
+                            this._handleUpdateSettingsSignal(file);
                         }
                     }
                 } catch (e) {
-                    Logger.warn(`Error checking settings signal file: ${e.message}`);
+                    Logger.warn(`Error handling signal event: ${e.message}`);
                 }
-                return true; // Continue watching
+            });
+            
+            this._signalMonitor = monitor;
+            Logger.debug('Signal monitor started');
+        } catch (e) {
+            Logger.error('Failed to start signal monitor', e);
+        }
+    }
+
+    _handleReloadSignal(signalFile) {
+        try {
+            Logger.debug('Reload signal detected, checking for updates...');
+            // Reload config first to get any newly added projects
+            this.configManager.load();
+            this.checkForUpdates();
+            // Delete the signal file
+            try {
+                signalFile.delete(null);
+            } catch (e) {
+                Logger.warn(`Could not delete reload signal file: ${e.message}`);
             }
-        );
+        } catch (e) {
+            Logger.warn(`Error handling reload signal: ${e.message}`);
+        }
+    }
+
+    _handleOpenSettingsSignal(signalFile) {
+        try {
+            Logger.info('Settings signal detected, opening settings window...');
+            this._openSettingsWindow();
+            // Delete the signal file
+            try {
+                signalFile.delete(null);
+            } catch (e) {
+                Logger.warn(`Could not delete settings signal file: ${e.message}`);
+            }
+        } catch (e) {
+            Logger.warn(`Error handling open settings signal: ${e.message}`);
+        }
+    }
+
+    _handleUpdateSettingsSignal(signalFile) {
+        try {
+            Logger.debug('Settings update signal detected, reading settings...');
+            this._applySettingsUpdate();
+            // Delete the signal file
+            try {
+                signalFile.delete(null);
+            } catch (e) {
+                Logger.warn(`Could not delete settings update signal file: ${e.message}`);
+            }
+        } catch (e) {
+            Logger.warn(`Error handling settings update signal: ${e.message}`);
+        }
     }
     
     _openSettingsWindow() {
@@ -404,67 +455,10 @@ export default class ReleaseMonitorExtension extends Extension {
         }
     }
     
-    _startSettingsUpdateWatcher() {
-        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-update-settings');
-        
-        // Check for settings update signal file periodically
-        this._settingsUpdateWatchId = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            1, // Check every second
-            () => {
-                try {
-                    if (signalFile.query_exists(null)) {
-                        // Signal file exists - read and apply settings
-                        Logger.debug('Settings update signal file detected, reading settings...');
-                        this._applySettingsUpdate();
-                        // Delete the signal file
-                        try {
-                            signalFile.delete(null);
-                        } catch (e) {
-                            Logger.warn(`Could not delete signal file: ${e.message}`);
-                        }
-                    }
-                } catch (e) {
-                    Logger.warn(`Error checking settings update signal file: ${e.message}`);
-                }
-                return true; // Continue watching
-            }
-        );
-    }
-    
-    _startReloadWatcher() {
-        const signalFile = Gio.File.new_for_path('/tmp/release-monitor-reload');
-        
-        // Check for reload signal file periodically
-        this._reloadWatchId = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            1, // Check every second
-            () => {
-                try {
-                    if (signalFile.query_exists(null)) {
-                        // Signal file exists - trigger reload
-                        Logger.debug('Reload signal file detected, checking for updates...');
-                        // Reload config first to get any newly added projects
-                        this.configManager.load();
-                        this.checkForUpdates();
-                        // Delete the signal file
-                        try {
-                            signalFile.delete(null);
-                        } catch (e) {
-                            Logger.warn(`Could not delete reload signal file: ${e.message}`);
-                        }
-                    }
-                } catch (e) {
-                    Logger.warn(`Error checking reload signal file: ${e.message}`);
-                }
-                return true; // Continue watching
-            }
-        );
-    }
     
     _applySettingsUpdate() {
-        // Read settings from JSON file
-        const settingsFile = Gio.File.new_for_path('/tmp/release-monitor-settings-update.json');
+        // Read settings from JSON file in signals directory
+        const settingsFile = this.configManager.getSignalFile('settings-update.json');
         try {
             if (settingsFile.query_exists(null)) {
                 const [success, contents] = settingsFile.load_contents(null);
@@ -533,18 +527,10 @@ export default class ReleaseMonitorExtension extends Extension {
     }
 
     disable() {
-        // Remove file watchers
-        if (this._reloadWatchId) {
-            GLib.source_remove(this._reloadWatchId);
-            this._reloadWatchId = null;
-        }
-        if (this._settingsUpdateWatchId) {
-            GLib.source_remove(this._settingsUpdateWatchId);
-            this._settingsUpdateWatchId = null;
-        }
-        if (this._settingsWatchId) {
-            GLib.source_remove(this._settingsWatchId);
-            this._settingsWatchId = null;
+        // Remove signal monitor
+        if (this._signalMonitor) {
+            this._signalMonitor.cancel();
+            this._signalMonitor = null;
         }
         
         // Disconnect signal handlers
