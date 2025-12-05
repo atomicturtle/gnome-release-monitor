@@ -798,34 +798,61 @@ export default class ReleaseMonitorExtension extends Extension {
                     Logger.debug(`checkForUpdates: Release object: ${JSON.stringify({tag_name: release.tag_name, version: release.version, name: release.name})}`);
                     
                     // Check if this is a new release
-                    // For release-monitoring.org, published_at may be null, so we compare versions
-                    // For GitHub, we compare both version and date to be more reliable
-                    const isNewRelease = source === 'release-monitoring' 
-                        ? (!project.lastRelease || (project.lastRelease.version || project.lastRelease.tag_name) !== releaseVersion)
-                        : (() => {
-                            // First check if version changed (more reliable than date)
-                            const lastReleaseVersion = project.lastRelease 
-                                ? (project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name)
-                                : null;
-                            if (lastReleaseVersion !== releaseVersion) {
-                                Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion}`);
+                    // We use published date as the primary indicator since version strings can be misleading
+                    // (e.g., version filters might match older releases, or version formats might differ)
+                    const isNewRelease = (() => {
+                        // If no previous release, this is definitely new
+                        if (!project.lastRelease) {
+                            Logger.info(`checkForUpdates: No previous release for ${projectIdentifier}, marking as new`);
+                            return true;
+                        }
+                        
+                        // Get published dates for comparison (most reliable indicator)
+                        const releaseDate = release.published_at ? new Date(release.published_at) : null;
+                        const lastReleaseDate = project.lastRelease.published_at
+                            ? new Date(project.lastRelease.published_at)
+                            : null;
+                        
+                        // If both dates are available, compare them
+                        if (releaseDate && lastReleaseDate) {
+                            if (releaseDate > lastReleaseDate) {
+                                Logger.info(`checkForUpdates: Date changed from ${lastReleaseDate.toISOString()} to ${releaseDate.toISOString()} for ${projectIdentifier}`);
+                                return true;
+                            } else if (releaseDate < lastReleaseDate) {
+                                Logger.info(`checkForUpdates: Release date is older (${releaseDate.toISOString()} < ${lastReleaseDate.toISOString()}) for ${projectIdentifier}, not marking as new`);
+                                return false;
+                            }
+                            // Dates are equal, check version string as fallback
+                        }
+                        
+                        // If dates aren't available or are equal, compare version strings
+                        // But only mark as new if version is actually different (not just different format)
+                        const lastReleaseVersion = project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name;
+                        if (lastReleaseVersion !== releaseVersion) {
+                            // If dates are equal, don't mark as new (might be a re-tag or version filter matching older release)
+                            if (releaseDate && lastReleaseDate && releaseDate.getTime() === lastReleaseDate.getTime()) {
+                                Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier}, but dates are equal - not marking as new`);
+                                return false;
+                            }
+                            // For release-monitoring.org, if dates aren't available, we have to rely on version strings
+                            // This is less reliable but necessary when dates aren't provided
+                            if (source === 'release-monitoring' && !releaseDate) {
+                                Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier} (no date available, using version comparison)`);
                                 return true;
                             }
-                            // If version is the same, check date
-                            const releaseDate = release.published_at ? new Date(release.published_at) : null;
-                            const lastReleaseDate = project.lastRelease && project.lastRelease.published_at
-                                ? new Date(project.lastRelease.published_at)
-                                : null;
-                            if (releaseDate && lastReleaseDate && releaseDate > lastReleaseDate) {
-                                Logger.info(`checkForUpdates: Date changed from ${lastReleaseDate} to ${releaseDate}`);
+                            // If we have a newer date (or dates are unavailable), version change indicates new release
+                            if (!releaseDate || !lastReleaseDate || releaseDate > lastReleaseDate) {
+                                Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier}`);
                                 return true;
                             }
-                            // If no lastRelease, it's new
-                            if (!project.lastRelease) {
-                                return true;
-                            }
+                            // If date is older, don't mark as new (version filter might have matched older release)
+                            Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier}, but date is older - not marking as new`);
                             return false;
-                        })();
+                        }
+                        
+                        // No change detected
+                        return false;
+                    })();
                     
                     // Always update the config with the latest release info
                     Logger.debug(`checkForUpdates: Calling updateProjectRelease for ${projectIdentifier} with release version ${releaseVersion}, isNewRelease: ${isNewRelease}`);
