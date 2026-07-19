@@ -164,16 +164,24 @@ export const ConfigManager = class {
         }
     }
 
-    addProject(owner, repo, versionFilter = null, source = 'github', projectName = null) {
+    addProject(owner, repo, versionFilter = null, source = 'github', projectName = null, major = null, arch = 'x86_64', packageName = 'kernel') {
         const project = {
             source: source || 'github',
             owner: owner || null,
             repo: repo || null,
             projectName: projectName || null, // For release-monitoring.org
             versionFilter: versionFilter || null,
+            major: major || null, // For rhel-cdn (8/9/10)
+            arch: source === 'rhel-cdn' ? (arch || 'x86_64') : null,
+            package: source === 'rhel-cdn' ? (packageName || 'kernel') : null,
             lastRelease: null,
             lastChecked: null
         };
+        if (source === 'rhel-cdn') {
+            project.owner = 'rhel';
+            project.repo = `kernel-${major}`;
+            project.projectName = `rhel-${major}/kernel`;
+        }
         this.projects.push(project);
         this.save();
         return project;
@@ -188,6 +196,8 @@ export const ConfigManager = class {
                 if (source === 'release-monitoring') {
                     const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
                     return p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedCurrentFilter;
+                } else if (source === 'rhel-cdn') {
+                    return p.source === 'rhel-cdn' && String(p.major) === String(owner);
                 } else {
                     const isGitHub = (p.source === 'github' || !p.source || p.source === null);
                     const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
@@ -215,6 +225,16 @@ export const ConfigManager = class {
                     const matches = p.source === 'release-monitoring' && p.projectName === owner && pFilter === normalizedFilter;
                     if (matches) {
                         Logger.debug(`removeProject: Filtering out release-monitoring project: ${p.projectName} (filter: ${pFilter})`);
+                    }
+                    return !matches;
+                }
+            );
+        } else if (source === 'rhel-cdn') {
+            this.projects = this.projects.filter(
+                p => {
+                    const matches = p.source === 'rhel-cdn' && String(p.major) === String(owner);
+                    if (matches) {
+                        Logger.debug(`removeProject: Filtering out rhel-cdn project: rhel-${p.major}/kernel`);
                     }
                     return !matches;
                 }
@@ -256,6 +276,12 @@ export const ConfigManager = class {
                     return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
                 }
             );
+        } else if (source === 'rhel-cdn') {
+            // owner holds major version for rhel-cdn updates
+            const major = owner || projectName;
+            project = this.projects.find(
+                p => p.source === 'rhel-cdn' && String(p.major) === String(major)
+            );
         } else {
             // For GitHub projects, also handle projects without source field (backward compatibility)
             project = this.projects.find(
@@ -280,7 +306,9 @@ export const ConfigManager = class {
             project.lastChecked = new Date().toISOString();
             // Set hasNewRelease flag: true if this is a new release, false otherwise
             project.hasNewRelease = isNewRelease;
-            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
+            const identifier = source === 'release-monitoring'
+                ? projectName
+                : (source === 'rhel-cdn' ? `rhel-${project.major}/kernel` : `${owner}/${repo}`);
             Logger.info(`updateProjectRelease: Saving release ${releaseToSave.tag_name} (version: ${releaseToSave.version}, name: ${releaseToSave.name}) for ${identifier} (filter: ${normalizedFilter}, hasNewRelease: ${isNewRelease})`);
             this.save();
             Logger.info("updateProjectRelease: Config saved, reloading...");
@@ -291,6 +319,9 @@ export const ConfigManager = class {
                     if (source === 'release-monitoring') {
                         const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
                         return p.source === 'release-monitoring' && p.projectName === projectName && pFilter === normalizedFilter;
+                    } else if (source === 'rhel-cdn') {
+                        const major = owner || projectName;
+                        return p.source === 'rhel-cdn' && String(p.major) === String(major);
                     } else {
                         const isGitHub = (p.source === 'github' || !p.source || p.source === null);
                         const pFilter = (p.versionFilter === null || p.versionFilter === undefined || p.versionFilter === '') ? null : p.versionFilter;
@@ -305,7 +336,9 @@ export const ConfigManager = class {
                 Logger.error(`updateProjectRelease: WARNING - Could not verify saved release for ${identifier} (filter: ${normalizedFilter})`);
             }
         } else {
-            const identifier = source === 'release-monitoring' ? projectName : `${owner}/${repo}`;
+            const identifier = source === 'release-monitoring'
+                ? projectName
+                : (source === 'rhel-cdn' ? `rhel-${owner}/kernel` : `${owner}/${repo}`);
             Logger.error(`updateProjectRelease: Project ${identifier} not found in config (source: ${source}, filter: ${normalizedFilter})`);
         }
     }

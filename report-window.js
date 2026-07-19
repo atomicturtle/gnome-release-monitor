@@ -246,13 +246,23 @@ app.connect('startup', () => {
                     let aVal, bVal;
                     if (column === 'project') {
                         const aSource = a.source || 'github';
-                        const aName = aSource === 'release-monitoring'
-                            ? (a.projectName || a.owner || 'unknown')
-                            : (a.owner + '/' + a.repo);
+                        let aName;
+                        if (aSource === 'release-monitoring') {
+                            aName = a.projectName || a.owner || 'unknown';
+                        } else if (aSource === 'rhel-cdn') {
+                            aName = `rhel-${a.major}/kernel`;
+                        } else {
+                            aName = a.owner + '/' + a.repo;
+                        }
                         const bSource = b.source || 'github';
-                        const bName = bSource === 'release-monitoring'
-                            ? (b.projectName || b.owner || 'unknown')
-                            : (b.owner + '/' + b.repo);
+                        let bName;
+                        if (bSource === 'release-monitoring') {
+                            bName = b.projectName || b.owner || 'unknown';
+                        } else if (bSource === 'rhel-cdn') {
+                            bName = `rhel-${b.major}/kernel`;
+                        } else {
+                            bName = b.owner + '/' + b.repo;
+                        }
                         aVal = aName.toLowerCase();
                         bVal = bName.toLowerCase();
                     } else if (column === 'release') {
@@ -282,9 +292,14 @@ app.connect('startup', () => {
                 }
                 
                 const source = project.source || 'github';
-                const displayName = source === 'release-monitoring'
-                    ? (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)'
-                    : (project.owner + '/' + project.repo);
+                let displayName;
+                if (source === 'release-monitoring') {
+                    displayName = (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)';
+                } else if (source === 'rhel-cdn') {
+                    displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+                } else {
+                    displayName = project.owner + '/' + project.repo;
+                }
                 
                 const nameLabel = new Gtk.Label({
                     label: displayName,
@@ -312,6 +327,8 @@ app.connect('startup', () => {
                                 
                                 if (pSource === 'release-monitoring' && source === 'release-monitoring') {
                                     return p.projectName === project.projectName && pFilter === projectFilter;
+                                } else if (pSource === 'rhel-cdn' && source === 'rhel-cdn') {
+                                    return String(p.major) === String(project.major);
                                 } else if (pSource === 'github' || !pSource || pSource === null) {
                                     const isGitHub = (source === 'github' || !source || source === null);
                                     return isGitHub && p.owner === project.owner && p.repo === project.repo && pFilter === projectFilter;
@@ -478,9 +495,13 @@ app.connect('startup', () => {
                 const initialProjectCount = projects.length;
                 const initialProjectIds = projects.map(p => {
                     const source = p.source || 'github';
-                    return source === 'release-monitoring' 
-                        ? (p.projectName || p.owner || 'unknown')
-                        : `${p.owner}/${p.repo}`;
+                    if (source === 'release-monitoring') {
+                        return p.projectName || p.owner || 'unknown';
+                    }
+                    if (source === 'rhel-cdn') {
+                        return `rhel-${p.major}/kernel`;
+                    }
+                    return `${p.owner}/${p.repo}`;
                 }).sort();
                 
                 // Wait a moment for the extension to process, then refresh the window
@@ -494,9 +515,13 @@ app.connect('startup', () => {
                         const currentProjectCount = projects.length;
                         const currentProjectIds = projects.map(p => {
                             const source = p.source || 'github';
-                            return source === 'release-monitoring' 
-                                ? (p.projectName || p.owner || 'unknown')
-                                : `${p.owner}/${p.repo}`;
+                            if (source === 'release-monitoring') {
+                                return p.projectName || p.owner || 'unknown';
+                            }
+                            if (source === 'rhel-cdn') {
+                                return `rhel-${p.major}/kernel`;
+                            }
+                            return `${p.owner}/${p.repo}`;
                         }).sort();
                         
                         const projectCountChanged = currentProjectCount !== initialProjectCount;

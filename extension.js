@@ -6,6 +6,7 @@ import * as MessageTray from "resource:///org/gnome/shell/ui/messageTray.js";
 import { ConfigManager } from "./configManager.js";
 import { GitHubAPI } from "./githubAPI.js";
 import { ReleaseMonitoringAPI } from "./releaseMonitoringAPI.js";
+import { RedhatCdnAPI } from "./redhatCdnAPI.js";
 import { ReleaseMonitorIndicator } from "./indicator.js";
 import * as Logger from "./logger.js";
 
@@ -19,6 +20,7 @@ export default class ReleaseMonitorExtension extends Extension {
         this.configManager = null;
         this.githubAPI = null;
         this.releaseMonitoringAPI = null;
+        this.redhatCdnAPI = null;
         this.indicator = null;
         this.checkInterval = null;
         this.settings = null;
@@ -27,6 +29,7 @@ export default class ReleaseMonitorExtension extends Extension {
         this._signalMonitor = null; // GFileMonitor for signal directory
         this._settingsWindowProcessId = null; // Track settings window process
         this._prefsProcessId = null; // Track preferences window process (gnome-extensions prefs)
+        this._reloadInProgress = false;
     }
 
     enable() {
@@ -45,6 +48,11 @@ export default class ReleaseMonitorExtension extends Extension {
             }
             this.releaseMonitoringAPI = new ReleaseMonitoringAPI(apiToken);
             this.settings = this.getSettings();
+            this.redhatCdnAPI = new RedhatCdnAPI(
+                this._getRhelCdnSetting('rhel-cdn-cert-path'),
+                this._getRhelCdnSetting('rhel-cdn-key-path'),
+                this._getRhelCdnSetting('rhel-cdn-ca-path')
+            );
             
             // Defer indicator creation to avoid blocking
             GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
@@ -302,8 +310,10 @@ export default class ReleaseMonitorExtension extends Extension {
             
             monitor.connect('changed', (monitor, file, otherFile, eventType) => {
                 try {
-                    // Only handle file creation events
-                    if (eventType === Gio.FileMonitorEvent.CREATED) {
+                    // Handle create and content-change so `touch reload` works when file already exists
+                    if (eventType === Gio.FileMonitorEvent.CREATED ||
+                        eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
+                        eventType === Gio.FileMonitorEvent.CHANGED) {
                         const basename = file.get_basename();
                         
                         if (basename === 'reload') {
@@ -328,10 +338,16 @@ export default class ReleaseMonitorExtension extends Extension {
 
     _handleReloadSignal(signalFile) {
         try {
+            if (this._reloadInProgress) {
+                return;
+            }
+            this._reloadInProgress = true;
             Logger.debug('Reload signal detected, checking for updates...');
             // Reload config first to get any newly added projects
             this.configManager.load();
-            this.checkForUpdates();
+            this.checkForUpdates().finally(() => {
+                this._reloadInProgress = false;
+            });
             // Delete the signal file
             try {
                 signalFile.delete(null);
@@ -339,6 +355,7 @@ export default class ReleaseMonitorExtension extends Extension {
                 Logger.warn(`Could not delete reload signal file: ${e.message}`);
             }
         } catch (e) {
+            this._reloadInProgress = false;
             Logger.warn(`Error handling reload signal: ${e.message}`);
         }
     }
@@ -373,6 +390,15 @@ export default class ReleaseMonitorExtension extends Extension {
         }
     }
     
+    _getRhelCdnSetting(key) {
+        try {
+            return this.settings.get_string(key) || '';
+        } catch (e) {
+            Logger.warn(`Could not read ${key}: ${e.message}`);
+            return '';
+        }
+    }
+
     _openSettingsWindow() {
         // Check if settings window is already open
         if (this._settingsWindowProcessId) {
@@ -416,12 +442,25 @@ export default class ReleaseMonitorExtension extends Extension {
             } catch (e) {
                 Logger.warn(`Could not read release-monitoring-api-token: ${e.message}`);
             }
+
+            const certPath = this._getRhelCdnSetting('rhel-cdn-cert-path');
+            const keyPath = this._getRhelCdnSetting('rhel-cdn-key-path');
+            const caPath = this._getRhelCdnSetting('rhel-cdn-ca-path');
             
             Logger.info(`_openSettingsWindow: Launching ${settingsWindowScript} with interval=${currentInterval}, position=${currentPosition}, apiToken=${currentApiToken ? '***' : '(empty)'}`);
             
             const [success, pid] = GLib.spawn_async(
                 null,
-                ['gjs', '-m', settingsWindowScript, extensionDir, this.metadata.version || '1', currentInterval.toString(), currentPosition, currentApiToken],
+                [
+                    'gjs', '-m', settingsWindowScript, extensionDir,
+                    this.metadata.version || '1',
+                    currentInterval.toString(),
+                    currentPosition,
+                    currentApiToken,
+                    certPath,
+                    keyPath,
+                    caPath
+                ],
                 null,
                 GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
                 null
@@ -482,6 +521,28 @@ export default class ReleaseMonitorExtension extends Extension {
                         Logger.info(`_applySettingsUpdate: API token ${settingsData.apiToken ? 'updated' : 'cleared'}`);
                         // Recreate the API instance with the new token
                         this.releaseMonitoringAPI = new ReleaseMonitoringAPI(settingsData.apiToken || null);
+                    }
+
+                    if (settingsData.rhelCdnCertPath !== undefined) {
+                        this.settings.set_string('rhel-cdn-cert-path', settingsData.rhelCdnCertPath || '');
+                    }
+                    if (settingsData.rhelCdnKeyPath !== undefined) {
+                        this.settings.set_string('rhel-cdn-key-path', settingsData.rhelCdnKeyPath || '');
+                    }
+                    if (settingsData.rhelCdnCaPath !== undefined) {
+                        this.settings.set_string('rhel-cdn-ca-path', settingsData.rhelCdnCaPath || '');
+                    }
+                    if (this.redhatCdnAPI && (
+                        settingsData.rhelCdnCertPath !== undefined ||
+                        settingsData.rhelCdnKeyPath !== undefined ||
+                        settingsData.rhelCdnCaPath !== undefined
+                    )) {
+                        this.redhatCdnAPI.setCertificatePaths(
+                            this._getRhelCdnSetting('rhel-cdn-cert-path'),
+                            this._getRhelCdnSetting('rhel-cdn-key-path'),
+                            this._getRhelCdnSetting('rhel-cdn-ca-path')
+                        );
+                        Logger.info('_applySettingsUpdate: RHEL CDN certificate paths updated');
                     }
                     
                     // Delete the settings file
@@ -772,7 +833,9 @@ export default class ReleaseMonitorExtension extends Extension {
         Logger.debug(`checkForUpdates: Checking ${projects.length} projects`);
         let hasNewReleases = false;
         
-        const checkPromises = projects.map(async (project) => {
+        // Run sequentially to avoid ConfigManager save/load races wiping updates
+        for (const project of projects) {
+            await (async () => {
             try {
                 const source = project.source || 'github'; // Default to github for backward compatibility
                 const versionFilter = project.versionFilter || null;
@@ -785,6 +848,18 @@ export default class ReleaseMonitorExtension extends Extension {
                     projectIdentifier = projectName;
                     Logger.debug(`checkForUpdates: Checking release-monitoring.org project "${projectName}"${versionFilter ? ` (filter: ${versionFilter})` : ''}`);
                     release = await this.releaseMonitoringAPI.getLatestRelease(projectName, versionFilter);
+                } else if (source === 'rhel-cdn') {
+                    const major = project.major || project.owner;
+                    const arch = project.arch || 'x86_64';
+                    projectIdentifier = `rhel-${major}/kernel`;
+                    Logger.debug(`checkForUpdates: Checking RHEL ${major} kernel via CDN/Security Data (${arch})`);
+                    // Refresh cert paths from settings each check
+                    this.redhatCdnAPI.setCertificatePaths(
+                        this._getRhelCdnSetting('rhel-cdn-cert-path'),
+                        this._getRhelCdnSetting('rhel-cdn-key-path'),
+                        this._getRhelCdnSetting('rhel-cdn-ca-path')
+                    );
+                    release = await this.redhatCdnAPI.getLatestKernel(major, arch);
                 } else {
                     // GitHub
                     projectIdentifier = `${project.owner}/${project.repo}`;
@@ -801,10 +876,10 @@ export default class ReleaseMonitorExtension extends Extension {
                     // We use published date as the primary indicator since version strings can be misleading
                     // (e.g., version filters might match older releases, or version formats might differ)
                     const isNewRelease = (() => {
-                        // If no previous release, this is definitely new
+                        // First successful observation: store baseline without notifying
                         if (!project.lastRelease) {
-                            Logger.info(`checkForUpdates: No previous release for ${projectIdentifier}, marking as new`);
-                            return true;
+                            Logger.info(`checkForUpdates: No previous release for ${projectIdentifier}, storing baseline (no notification)`);
+                            return false;
                         }
                         
                         // Get published dates for comparison (most reliable indicator)
@@ -830,7 +905,12 @@ export default class ReleaseMonitorExtension extends Extension {
                         const lastReleaseVersion = project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name;
                         if (lastReleaseVersion !== releaseVersion) {
                             // If dates are equal, don't mark as new (might be a re-tag or version filter matching older release)
+                            // Exception: RHEL CDN/Security Data versions can change with identical published timestamps
                             if (releaseDate && lastReleaseDate && releaseDate.getTime() === lastReleaseDate.getTime()) {
+                                if (source === 'rhel-cdn') {
+                                    Logger.info(`checkForUpdates: RHEL kernel version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier} (equal dates)`);
+                                    return true;
+                                }
                                 Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier}, but dates are equal - not marking as new`);
                                 return false;
                             }
@@ -838,6 +918,10 @@ export default class ReleaseMonitorExtension extends Extension {
                             // This is less reliable but necessary when dates aren't provided
                             if (source === 'release-monitoring' && !releaseDate) {
                                 Logger.info(`checkForUpdates: Version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier} (no date available, using version comparison)`);
+                                return true;
+                            }
+                            if (source === 'rhel-cdn') {
+                                Logger.info(`checkForUpdates: RHEL kernel version changed from ${lastReleaseVersion} to ${releaseVersion} for ${projectIdentifier}`);
                                 return true;
                             }
                             // If we have a newer date (or dates are unavailable), version change indicates new release
@@ -868,6 +952,16 @@ export default class ReleaseMonitorExtension extends Extension {
                                 versionFilter,
                                 isNewRelease
                             );
+                        } else if (source === 'rhel-cdn') {
+                            this.configManager.updateProjectRelease(
+                                project.major,
+                                null,
+                                release,
+                                source,
+                                `rhel-${project.major}/kernel`,
+                                null,
+                                isNewRelease
+                            );
                         } else {
                             this.configManager.updateProjectRelease(
                                 project.owner,
@@ -883,13 +977,22 @@ export default class ReleaseMonitorExtension extends Extension {
                         // Verify the update by reloading and checking
                         this.configManager.load();
                         const updatedProject = this.configManager.getProjects().find(
-                            p => source === 'release-monitoring' 
-                                ? (p.source === 'release-monitoring' && p.projectName === (project.projectName || project.owner))
-                                : (p.source === 'github' && p.owner === project.owner && p.repo === project.repo)
+                            p => {
+                                if (source === 'release-monitoring') {
+                                    return p.source === 'release-monitoring' && p.projectName === (project.projectName || project.owner);
+                                }
+                                if (source === 'rhel-cdn') {
+                                    return p.source === 'rhel-cdn' && String(p.major) === String(project.major);
+                                }
+                                return (p.source === 'github' || !p.source) && p.owner === project.owner && p.repo === project.repo;
+                            }
                         );
                         if (updatedProject && updatedProject.lastRelease) {
                             const savedVersion = updatedProject.lastRelease.tag_name || updatedProject.lastRelease.version || updatedProject.lastRelease.name;
                             Logger.info(`checkForUpdates: Verified saved version is ${savedVersion} for ${projectIdentifier}`);
+                            // Keep in-memory project fresh for later iterations in this run
+                            project.lastRelease = updatedProject.lastRelease;
+                            project.lastChecked = updatedProject.lastChecked;
                         } else {
                             Logger.error(`checkForUpdates: WARNING - Could not verify saved release for ${projectIdentifier}`);
                         }
@@ -904,12 +1007,16 @@ export default class ReleaseMonitorExtension extends Extension {
                         // Show notification
                         const displayName = source === 'release-monitoring' 
                             ? projectIdentifier 
-                            : projectIdentifier;
-                        this.showNotification(
-                            `New release: ${displayName}`,
-                            `${release.name || releaseVersion} (${releaseVersion})`,
-                            release.html_url || `https://release-monitoring.org/project/?name=${encodeURIComponent(projectIdentifier)}`
-                        );
+                            : (source === 'rhel-cdn' ? `RHEL ${project.major} kernel` : projectIdentifier);
+                        try {
+                            this.showNotification(
+                                `New release: ${displayName}`,
+                                `${release.name || releaseVersion} (${releaseVersion})`,
+                                release.html_url || `https://release-monitoring.org/project/?name=${encodeURIComponent(projectIdentifier)}`
+                            );
+                        } catch (notifyErr) {
+                            Logger.warn(`showNotification failed for ${projectIdentifier}: ${notifyErr.message}`);
+                        }
                     }
                     
                     // Rebuild menu to show updated release info
@@ -927,12 +1034,13 @@ export default class ReleaseMonitorExtension extends Extension {
             } catch (e) {
                 const projectIdentifier = project.source === 'release-monitoring' 
                     ? (project.projectName || project.owner || 'unknown')
-                    : `${project.owner}/${project.repo}`;
+                    : (project.source === 'rhel-cdn'
+                        ? `rhel-${project.major}/kernel`
+                        : `${project.owner}/${project.repo}`);
                 Logger.error(`Error checking ${projectIdentifier}: ${e.message}`, e);
             }
-        });
-        
-        await Promise.all(checkPromises);
+            })();
+        }
         
         // Update indicator icon
         if (this.indicator) {
@@ -941,20 +1049,40 @@ export default class ReleaseMonitorExtension extends Extension {
     }
 
     showNotification(title, body, url) {
-        const source = new MessageTray.SystemNotificationSource();
-        Main.messageTray.add(source);
-        
-        const notification = new MessageTray.Notification(source, title, body);
-        notification.setUrgency(MessageTray.Urgency.NORMAL);
-        
-        notification.connect('activated', () => {
+        // GNOME 49+: SystemNotificationSource was removed; Main.notify is stable.
+        // Keep url activation best-effort via default handler when possible.
+        try {
+            Main.notify(title, body);
+        } catch (e) {
+            Logger.warn(`Main.notify failed: ${e.message}`);
+        }
+        if (url) {
             try {
-                Gio.AppInfo.launch_default_for_uri(url, null);
+                // Also try richer tray notification when available
+                if (MessageTray.Source && MessageTray.Notification) {
+                    const source = new MessageTray.Source({
+                        title: 'Release Monitor',
+                        iconName: 'software-update-available-symbolic',
+                    });
+                    Main.getMessageTray().add(source);
+                    const notification = new MessageTray.Notification({
+                        source,
+                        title,
+                        body,
+                        isTransient: true,
+                    });
+                    notification.connect('activated', () => {
+                        try {
+                            Gio.AppInfo.launch_default_for_uri(url, null);
+                        } catch (err) {
+                            Logger.warn(`Error opening URL: ${err.message}`);
+                        }
+                    });
+                    source.addNotification(notification);
+                }
             } catch (e) {
-                log(`Error opening URL: ${e}`);
+                Logger.debug(`Rich notification unavailable: ${e.message}`);
             }
-        });
-        
-        source.notify(notification);
+        }
     }
 }

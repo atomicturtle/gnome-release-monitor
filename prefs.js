@@ -663,9 +663,14 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
     
     _addProjectRow(group, project) {
         const source = project.source || 'github';
-        const displayName = source === 'release-monitoring'
-            ? (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)'
-            : `${project.owner}/${project.repo}`;
+        let displayName;
+        if (source === 'release-monitoring') {
+            displayName = (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)';
+        } else if (source === 'rhel-cdn') {
+            displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+        } else {
+            displayName = `${project.owner}/${project.repo}`;
+        }
         const row = new Adw.ActionRow({
             title: displayName
         });
@@ -680,11 +685,12 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         }
         row.set_subtitle(subtitle);
         
-        // Version filter button
+        // Version filter button (not used for rhel-cdn)
         const filterButton = new Gtk.Button({
             label: project.versionFilter || 'Set Filter',
             tooltip_text: 'Set version filter (e.g., "1.0.x")',
-            valign: Gtk.Align.CENTER
+            valign: Gtk.Align.CENTER,
+            visible: source !== 'rhel-cdn'
         });
         filterButton.connect('clicked', () => {
             this._showVersionFilterDialog(group._window, group._configManager, project, group);
@@ -711,6 +717,9 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                     actualSource,
                     versionFilter
                 );
+            } else if (actualSource === 'rhel-cdn') {
+                console.log(`Removing rhel-cdn project: rhel-${project.major}/kernel`);
+                group._configManager.removeProject(project.major, null, actualSource, null);
             } else {
                 console.log(`Removing GitHub project: ${project.owner}/${project.repo} (filter: ${versionFilter})`);
                 group._configManager.removeProject(project.owner, project.repo, actualSource, versionFilter);
@@ -756,9 +765,14 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         });
         
         const source = project.source || 'github';
-        const projectIdentifier = source === 'release-monitoring'
-            ? (project.projectName || project.owner || 'unknown')
-            : `${project.owner}/${project.repo}`;
+        let projectIdentifier;
+        if (source === 'release-monitoring') {
+            projectIdentifier = project.projectName || project.owner || 'unknown';
+        } else if (source === 'rhel-cdn') {
+            projectIdentifier = `rhel-${project.major}/kernel`;
+        } else {
+            projectIdentifier = `${project.owner}/${project.repo}`;
+        }
         const infoLabel = new Gtk.Label({
             label: `Filter releases for ${projectIdentifier}\n\nExamples:\n• "1.0.x" or "1.0.*" - matches 1.0.1, 1.0.2, etc.\n• "1.5.x" - matches 1.5.1, 1.5.2, etc.\n• Leave empty to monitor all releases`,
             halign: Gtk.Align.START,
@@ -833,6 +847,7 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         const sourceCombo = new Gtk.ComboBoxText();
         sourceCombo.append('github', 'GitHub');
         sourceCombo.append('release-monitoring', 'release-monitoring.org');
+        sourceCombo.append('rhel-cdn', 'RHEL Kernel (CDN)');
         sourceCombo.set_active_id('github');
         box.append(sourceCombo);
         
@@ -868,8 +883,24 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
             visible: false
         });
         box.append(projectNameEntry);
+
+        const rhelMajorLabel = new Gtk.Label({
+            label: 'RHEL Major Version:',
+            halign: Gtk.Align.START,
+            visible: false
+        });
+        box.append(rhelMajorLabel);
+
+        const rhelMajorCombo = new Gtk.ComboBoxText({
+            visible: false
+        });
+        rhelMajorCombo.append('8', 'RHEL 8');
+        rhelMajorCombo.append('9', 'RHEL 9');
+        rhelMajorCombo.append('10', 'RHEL 10');
+        rhelMajorCombo.set_active_id('9');
+        box.append(rhelMajorCombo);
         
-        // Version filter (common to both)
+        // Version filter (common to github / release-monitoring)
         const versionFilterLabel = new Gtk.Label({
             label: 'Version Filter (optional, e.g., "1.0.x" or "1.5.*"):',
             halign: Gtk.Align.START
@@ -884,21 +915,20 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
         // Show/hide fields based on source
         const updateFields = () => {
             const source = sourceCombo.get_active_id();
-            if (source === 'release-monitoring') {
-                ownerLabel.set_visible(false);
-                ownerEntry.set_visible(false);
-                repoLabel.set_visible(false);
-                repoEntry.set_visible(false);
-                projectNameLabel.set_visible(true);
-                projectNameEntry.set_visible(true);
-            } else {
-                ownerLabel.set_visible(true);
-                ownerEntry.set_visible(true);
-                repoLabel.set_visible(true);
-                repoEntry.set_visible(true);
-                projectNameLabel.set_visible(false);
-                projectNameEntry.set_visible(false);
-            }
+            const isGithub = source === 'github';
+            const isRm = source === 'release-monitoring';
+            const isRhel = source === 'rhel-cdn';
+
+            ownerLabel.set_visible(isGithub);
+            ownerEntry.set_visible(isGithub);
+            repoLabel.set_visible(isGithub);
+            repoEntry.set_visible(isGithub);
+            projectNameLabel.set_visible(isRm);
+            projectNameEntry.set_visible(isRm);
+            rhelMajorLabel.set_visible(isRhel);
+            rhelMajorCombo.set_visible(isRhel);
+            versionFilterLabel.set_visible(!isRhel);
+            versionFilterEntry.set_visible(!isRhel);
         };
         sourceCombo.connect('changed', updateFields);
         updateFields(); // Initial state
@@ -915,8 +945,35 @@ export default class ReleaseMonitorPreferences extends ExtensionPreferences {
                 let repo = repoEntry.get_text().trim();
                 let projectName = projectNameEntry.get_text().trim();
                 let versionFilter = versionFilterEntry.get_text().trim() || null;
-                
-                if (source === 'release-monitoring') {
+
+                if (source === 'rhel-cdn') {
+                    const major = rhelMajorCombo.get_active_id();
+                    if (!major) {
+                        this._showError(window, 'Invalid input', 'Please select a RHEL major version.');
+                        return;
+                    }
+                    const exists = configManager.getProjects().some(
+                        p => p.source === 'rhel-cdn' && String(p.major) === String(major)
+                    );
+                    if (exists) {
+                        this._showError(window, 'Already monitored', `RHEL ${major} kernel is already being monitored.`);
+                        return;
+                    }
+                    configManager.addProject(null, null, null, 'rhel-cdn', null, major, 'x86_64', 'kernel');
+                    this._loadProjects(group);
+                    try {
+                        const configDir = GLib.get_user_config_dir();
+                        const signalDir = GLib.build_filenamev([configDir, 'release-monitor', 'signals']);
+                        const signalDirFile = Gio.File.new_for_path(signalDir);
+                        if (!signalDirFile.query_exists(null)) {
+                            signalDirFile.make_directory_with_parents(null);
+                        }
+                        const signalFile = Gio.File.new_for_path(GLib.build_filenamev([signalDir, 'reload']));
+                        signalFile.replace_contents('', null, false, Gio.FileCreateFlags.NONE, null);
+                    } catch (e) {
+                        console.log(`Could not create reload signal: ${e.message}`);
+                    }
+                } else if (source === 'release-monitoring') {
                     // Validate release-monitoring.org project
                     if (!projectName) {
                         this._showError(window, 

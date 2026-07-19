@@ -108,9 +108,14 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         } else {
             projects.forEach(project => {
                 const source = project.source || 'github';
-                const identifier = source === 'release-monitoring' 
-                    ? (project.projectName || project.owner || 'unknown')
-                    : `${project.owner}/${project.repo}`;
+                let identifier;
+                if (source === 'release-monitoring') {
+                    identifier = project.projectName || project.owner || 'unknown';
+                } else if (source === 'rhel-cdn') {
+                    identifier = `rhel-${project.major}/kernel`;
+                } else {
+                    identifier = `${project.owner}/${project.repo}`;
+                }
                 const releaseVersion = project.lastRelease 
                     ? (project.lastRelease.tag_name || project.lastRelease.version || project.lastRelease.name || 'unknown')
                     : 'null';
@@ -139,11 +144,16 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         
         const textBox = new St.BoxLayout({ vertical: true });
         const source = project.source || 'github';
-        const displayName = source === 'release-monitoring'
-            ? (project.projectName || project.owner || 'unknown')
-            : `${project.owner}/${project.repo}`;
+        let displayName;
+        if (source === 'release-monitoring') {
+            displayName = (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)';
+        } else if (source === 'rhel-cdn') {
+            displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+        } else {
+            displayName = `${project.owner}/${project.repo}`;
+        }
         const nameLabel = new St.Label({
-            text: displayName + (source === 'release-monitoring' ? ' (release-monitoring.org)' : ''),
+            text: displayName,
             style_class: 'popup-menu-item-label'
         });
         textBox.add_child(nameLabel);

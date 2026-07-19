@@ -10,10 +10,10 @@ import Adw from 'gi://Adw';
 Adw.init();
 
 // Read settings from command line arguments
-// Expected: settings-window.js <extension-path> <version> <current-interval> <current-position> [api-token]
+// Expected: settings-window.js <extension-path> <version> <current-interval> <current-position> [api-token] [cert] [key] [ca]
 const args = ARGV;
 if (args.length < 2) {
-    console.error('Usage: settings-window.js <extension-path> <version> [current-interval] [current-position] [api-token]');
+    console.error('Usage: settings-window.js <extension-path> <version> [current-interval] [current-position] [api-token] [cert-path] [key-path] [ca-path]');
     imports.system.exit(1);
 }
 
@@ -22,6 +22,9 @@ const version = args[1] || '1';
 const currentInterval = args.length > 2 ? parseInt(args[2], 10) : 1800;
 const currentPosition = args.length > 3 ? args[3] : 'right';
 const currentApiToken = args.length > 4 ? args[4] : '';
+const currentCertPath = args.length > 5 ? args[5] : '';
+const currentKeyPath = args.length > 6 ? args[6] : '';
+const currentCaPath = args.length > 7 ? args[7] : '';
 
 // Create application for theme support
 const app = new Adw.Application({
@@ -48,7 +51,7 @@ app.connect('startup', () => {
         application: app
     });
     window.set_title(`Release Monitor - Settings (v${version})`);
-    window.set_default_size(500, 400);
+    window.set_default_size(500, 620);
     window.set_resizable(true);
     window.set_deletable(true);
     window.set_modal(false);
@@ -219,6 +222,46 @@ app.connect('startup', () => {
     apiTokenBox.append(apiTokenEntry);
     
     mainBox.append(apiTokenBox);
+
+    // RHEL CDN certificate paths
+    const rhelCertBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 10
+    });
+
+    const rhelCertLabel = new Gtk.Label({
+        label: '<b>RHEL CDN Entitlement Certificates</b>',
+        use_markup: true,
+        halign: Gtk.Align.START
+    });
+    rhelCertBox.append(rhelCertLabel);
+
+    const rhelCertDesc = new Gtk.Label({
+        label: 'Client certificate, key, and CA (redhat-uep.pem) for CDN access. Leave blank to auto-detect under ~/.config/release-monitor/certs/. Without certs, RHEL kernel monitors use the public Security Data API (RHSA only).',
+        halign: Gtk.Align.START,
+        wrap: true
+    });
+    rhelCertBox.append(rhelCertDesc);
+
+    const certEntry = new Gtk.Entry({
+        placeholder_text: 'Entitlement cert .pem path (optional)',
+        text: currentCertPath || ''
+    });
+    rhelCertBox.append(certEntry);
+
+    const keyEntry = new Gtk.Entry({
+        placeholder_text: 'Entitlement key -key.pem path (optional)',
+        text: currentKeyPath || ''
+    });
+    rhelCertBox.append(keyEntry);
+
+    const caEntry = new Gtk.Entry({
+        placeholder_text: 'redhat-uep.pem path (optional)',
+        text: currentCaPath || ''
+    });
+    rhelCertBox.append(caEntry);
+
+    mainBox.append(rhelCertBox);
     
     // Buttons
     const buttonBox = new Gtk.Box({
@@ -245,6 +288,9 @@ app.connect('startup', () => {
         const newMinutes = refreshIntervalSpin.get_value_as_int();
         const newInterval = newMinutes * 60;
         const newApiToken = apiTokenEntry.get_text().trim() || '';
+        const newCertPath = certEntry.get_text().trim() || '';
+        const newKeyPath = keyEntry.get_text().trim() || '';
+        const newCaPath = caEntry.get_text().trim() || '';
         
         console.log(`Saving settings: position=${newPosition}, interval=${newInterval} seconds, apiToken=${newApiToken ? '***' : '(empty)'}`);
         
@@ -252,7 +298,10 @@ app.connect('startup', () => {
         const settingsData = {
             iconPosition: newPosition,
             refreshInterval: newInterval,
-            apiToken: newApiToken
+            apiToken: newApiToken,
+            rhelCdnCertPath: newCertPath,
+            rhelCdnKeyPath: newKeyPath,
+            rhelCdnCaPath: newCaPath
         };
         
         // Use signals directory in user config
