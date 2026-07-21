@@ -5,7 +5,7 @@ A GNOME Shell extension that monitors GitHub projects, release-monitoring.org, a
 ## Features
 
 - Monitor multiple GitHub repositories and release-monitoring.org projects for new releases
-- Monitor RHEL 8/9/10 `kernel` packages via Red Hat CDN (with entitlement certs) or the public Security Data API
+- Monitor RHEL 8/9/10 `kernel` packages via Red Hat CDN (entitlement certificates required)
 - Get desktop notifications when new releases are detected
 - View all monitored projects and their current releases in a preferences window
 - Easy-to-use interface to add and remove projects
@@ -53,17 +53,29 @@ gnome-extensions enable release-monitor@atomicrocketturtle.com
 
 ## RHEL kernel monitoring
 
-Monitors track the newest `kernel` NEVRA for each RHEL major (`8` / `9` / `10`) on x86_64 BaseOS.
+Monitors track the newest `kernel` NEVRA for each RHEL major (`8` / `9` / `10`) on x86_64 BaseOS from **cdn.redhat.com**. This is the correct signal when rebuilding Rocky kernels from shipping RHEL.
 
-### Primary: Red Hat CDN
+CDN access requires entitlement client certificates. There is **no RHSA/Security Data fallback** — that path misses bugfix-only (RHBA) kernels.
 
-With entitlement certificates, the extension fetches CDN BaseOS repodata:
+### Export certs with Podman (recommended)
 
-- `https://cdn.redhat.com/content/dist/rhel8/8/x86_64/baseos/os/`
-- `https://cdn.redhat.com/content/dist/rhel9/9/x86_64/baseos/os/`
-- `https://cdn.redhat.com/content/dist/rhel10/10/x86_64/baseos/os/`
+1. Activate a [Red Hat Developer Subscription](https://developers.redhat.com/) (or other subscription with BaseOS content) for your account.
+2. Run:
 
-Copy readable PEMs to:
+```bash
+cd ~/src/gnome-release-monitor
+./scripts/export-rhel-cdn-certs.sh
+```
+
+The script prompts for username/password (or reads `RH_USER` / `RH_PASSWORD` for that run only), registers a temporary UBI9 container, copies PEMs to `~/.config/release-monitor/certs/`, then unregisters and removes the container.
+
+**Never commit credentials.** Do not store the password in the repo, GSettings, or `projects.json`. If a password was pasted into chat or a ticket, rotate it.
+
+Refresh when CDN checks start failing (TLS/401): re-run the same script.
+
+Optional: `KEEP_REGISTERED=1` leaves the Podman container registered for debugging. `DEST_DIR=...` / `IMAGE=...` override defaults.
+
+### Certificate layout
 
 ```
 ~/.config/release-monitor/certs/
@@ -72,15 +84,17 @@ Copy readable PEMs to:
   redhat-uep.pem
 ```
 
-Or set explicit paths in **Settings** (`rhel-cdn-cert-path`, `rhel-cdn-key-path`, `rhel-cdn-ca-path`). Entitlement files under `/etc/pki/entitlement/` are often root-only; copy them to the config certs directory.
+Or set explicit paths in **Settings** (`rhel-cdn-cert-path`, `rhel-cdn-key-path`, `rhel-cdn-ca-path`).
 
-### Fallback: Security Data API
+CDN BaseOS URLs used:
 
-Without CDN certs (or if CDN returns an error), the monitor uses the public Red Hat Security Data API for recent RHSA advisories with `package=kernel`, filtered by `.el8` / `.el9` / `.el10`. This catches **security** kernel releases early but may miss bugfix-only (RHBA) kernels.
+- `https://cdn.redhat.com/content/dist/rhel8/8/x86_64/baseos/os/`
+- `https://cdn.redhat.com/content/dist/rhel9/9/x86_64/baseos/os/`
+- `https://cdn.redhat.com/content/dist/rhel10/10/x86_64/baseos/os/`
 
 ### Why CentOS Stream is not monitored
 
-CentOS Stream is a continuous preview of the *next* RHEL minor release. Stream kernel NEVRAs often diverge from the shipping RHEL z-stream, and Important/Critical security fixes frequently ship to RHEL first. For Rocky rebuilds of shipping RHEL kernels, RHEL CDN / RHSA is the accurate signal.
+CentOS Stream is a continuous preview of the *next* RHEL minor release. Stream kernel NEVRAs often diverge from the shipping RHEL z-stream, and Important/Critical security fixes frequently ship to RHEL first. For Rocky rebuilds of shipping RHEL kernels, RHEL CDN is the accurate signal.
 
 ## Configuration
 
@@ -110,14 +124,15 @@ Example RHEL kernel entry:
 ### Known Limitations
 
 - **release-monitoring.org "Retrieved on" date**: The "Retrieved on (UTC)" date shown on the release-monitoring.org web interface is not exposed via their API v2. The extension uses the project's `updated_on` timestamp (when the project was last checked) as a fallback, which may not match the exact date when a specific version was first detected.
-- **RHEL Security Data fallback**: Only RHSA (security) kernel updates are visible without CDN entitlements.
 - **EUS/AUS/SAP content paths** are not monitored in this version (main `rhelN/N` BaseOS only).
+- **Entitlement PEMs expire / rotate**; re-run `scripts/export-rhel-cdn-certs.sh` when CDN access fails.
 
 ## Requirements
 
 - GNOME Shell 45 or later
 - Internet connection for checking releases
-- (Optional) Red Hat entitlement certificates for full CDN kernel detection including non-security updates
+- Red Hat entitlement certificates for RHEL kernel monitors (`scripts/export-rhel-cdn-certs.sh` or manual PEMs)
+- Podman (only for the cert export script)
 
 ## Troubleshooting
 
@@ -127,7 +142,7 @@ If the extension doesn't work:
 2. Check for errors: `journalctl -f | grep -i "release-monitor"`
 3. Make sure you have an internet connection
 4. Verify the GitHub repository exists and has releases
-5. For RHEL CDN issues, confirm cert/key/CA paths are readable by your user and watch for CDN/Security Data messages in the journal
+5. For RHEL CDN issues: confirm PEMs exist under `~/.config/release-monitor/certs/`, re-run `./scripts/export-rhel-cdn-certs.sh`, and run `./test-rhel-kernels.js` — expect `method: cdn`
 
 ## Testing
 
@@ -135,12 +150,13 @@ If the extension doesn't work:
 
 ```bash
 cd ~/src/gnome-release-monitor
-./test-rhel-kernels.js          # RHEL 8, 9, and 10
-./test-rhel-kernels.js 9        # one major
+./scripts/export-rhel-cdn-certs.sh   # once, or when certs expire
+./test-rhel-kernels.js               # RHEL 8, 9, and 10
+./test-rhel-kernels.js 9             # one major
 CERT=/path/cert.pem KEY=/path/key.pem CA=/path/redhat-uep.pem ./test-rhel-kernels.js
 ```
 
-Without entitlement PEMs this uses the Security Data API fallback and prints version, method, published time, and errata URL.
+Successful CDN checks print `method: cdn` and the newest BaseOS `kernel` NEVRA.
 
 ### Notification icon
 

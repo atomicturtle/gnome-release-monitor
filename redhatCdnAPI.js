@@ -151,27 +151,15 @@ export const RedhatCdnAPI = class {
         const memIn = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(data));
         const converter = Gio.ZlibDecompressor.new(Gio.ZlibCompressorFormat.GZIP);
         const converterStream = Gio.ConverterInputStream.new(memIn, converter);
-        const chunks = [];
-        const buf = new Uint8Array(65536);
-        while (true) {
-            const n = converterStream.read(buf, null);
-            if (n <= 0) {
-                break;
-            }
-            chunks.push(buf.slice(0, n));
-        }
-        converterStream.close(null);
-        let total = 0;
-        for (const c of chunks) {
-            total += c.length;
-        }
-        const out = new Uint8Array(total);
-        let offset = 0;
-        for (const c of chunks) {
-            out.set(c, offset);
-            offset += c.length;
-        }
-        return out;
+        // Prefer splice: Gio.InputStream.read(Uint8Array) is not introspectable on some GJS builds
+        const memOut = Gio.MemoryOutputStream.new_resizable();
+        memOut.splice(
+            converterStream,
+            Gio.OutputStreamSpliceFlags.CLOSE_SOURCE | Gio.OutputStreamSpliceFlags.CLOSE_TARGET,
+            null
+        );
+        const outBytes = memOut.steal_as_bytes();
+        return outBytes.get_data();
     }
 
     _bytesToString(data) {
@@ -179,23 +167,30 @@ export const RedhatCdnAPI = class {
     }
 
     _parseVerRelParts(value) {
-        // Split into alternating non-digit / digit tokens for rpm-like compare
+        // rpmvercmp-style: skip non-alphanumeric separators, then alternate alpha/digit runs
         const parts = [];
         let i = 0;
-        while (i < value.length) {
-            if (/\d/.test(value[i])) {
+        const s = value || '';
+        while (i < s.length) {
+            while (i < s.length && !/[A-Za-z0-9]/.test(s[i])) {
+                i++;
+            }
+            if (i >= s.length) {
+                break;
+            }
+            if (/\d/.test(s[i])) {
                 let j = i;
-                while (j < value.length && /\d/.test(value[j])) {
+                while (j < s.length && /\d/.test(s[j])) {
                     j++;
                 }
-                parts.push({num: true, v: parseInt(value.slice(i, j), 10)});
+                parts.push({num: true, v: parseInt(s.slice(i, j), 10)});
                 i = j;
             } else {
                 let j = i;
-                while (j < value.length && !/\d/.test(value[j])) {
+                while (j < s.length && /[A-Za-z]/.test(s[j])) {
                     j++;
                 }
-                parts.push({num: false, v: value.slice(i, j)});
+                parts.push({num: false, v: s.slice(i, j)});
                 i = j;
             }
         }
@@ -436,17 +431,8 @@ export const RedhatCdnAPI = class {
             throw new Error(`Unsupported RHEL major version: ${major}`);
         }
 
-        try {
-            return await this._getLatestFromCdn(majorStr, arch || 'x86_64');
-        } catch (cdnError) {
-            Logger.warn(`RedhatCdnAPI: CDN failed for RHEL ${majorStr}: ${cdnError.message}; trying Security Data API`);
-            const fallback = await this._getLatestFromSecurityData(majorStr);
-            if (!fallback) {
-                throw new Error(
-                    `No kernel found for RHEL ${majorStr} (CDN: ${cdnError.message}; Security Data: empty)`
-                );
-            }
-            return fallback;
-        }
+        // CDN only — no Security Data fallback. RHSA-only misses RHBA kernels and is
+        // the wrong signal for rebuilding Rocky from shipping RHEL NEVRAs.
+        return await this._getLatestFromCdn(majorStr, arch || 'x86_64');
     }
 };

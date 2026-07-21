@@ -148,7 +148,14 @@ class ReleaseMonitorIndicator extends PanelMenu.Button {
         if (source === 'release-monitoring') {
             displayName = (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)';
         } else if (source === 'rhel-cdn') {
-            displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+            const method = project.lastRelease && project.lastRelease.source_method;
+            if (method === 'cdn') {
+                displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+            } else if (method === 'security-data') {
+                displayName = `rhel-${project.major}/kernel (RHSA fallback)`;
+            } else {
+                displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+            }
         } else {
             displayName = `${project.owner}/${project.repo}`;
         }

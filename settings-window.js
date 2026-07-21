@@ -237,7 +237,7 @@ app.connect('startup', () => {
     rhelCertBox.append(rhelCertLabel);
 
     const rhelCertDesc = new Gtk.Label({
-        label: 'Client certificate, key, and CA (redhat-uep.pem) for CDN access. Leave blank to auto-detect under ~/.config/release-monitor/certs/. Without certs, RHEL kernel monitors use the public Security Data API (RHSA only).',
+        label: 'Client certificate, key, and CA (redhat-uep.pem) for CDN access. Leave blank to auto-detect under ~/.config/release-monitor/certs/. Required for RHEL kernel monitors — use scripts/export-rhel-cdn-certs.sh. There is no RHSA fallback.',
         halign: Gtk.Align.START,
         wrap: true
     });

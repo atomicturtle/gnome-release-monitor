@@ -218,9 +218,9 @@ app.connect('startup', () => {
             spacing: 0
         });
         
-        // Sort state
-        let sortColumn = null;
-        let sortAscending = true;
+        // Sort state — default: published date, newest first
+        let sortColumn = 'date';
+        let sortAscending = false;
         
         // Store reference to tableBox for refresh
         let tableBoxRef = tableBox;
@@ -296,7 +296,14 @@ app.connect('startup', () => {
                 if (source === 'release-monitoring') {
                     displayName = (project.projectName || project.owner || 'unknown') + ' (release-monitoring.org)';
                 } else if (source === 'rhel-cdn') {
-                    displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+                    const method = project.lastRelease && project.lastRelease.source_method;
+                    if (method === 'cdn') {
+                        displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+                    } else if (method === 'security-data') {
+                        displayName = `rhel-${project.major}/kernel (RHSA fallback)`;
+                    } else {
+                        displayName = `rhel-${project.major}/kernel (RHEL CDN)`;
+                    }
                 } else {
                     displayName = project.owner + '/' + project.repo;
                 }
@@ -464,8 +471,8 @@ app.connect('startup', () => {
         });
         tableBox.append(headerSeparator);
         
-        // Build initial table (unsorted)
-        rebuildTable(null, true);
+        // Build initial table (published date, newest first)
+        rebuildTable(sortColumn, sortAscending);
         
         scrolled.set_child(tableBox);
         scrolled.set_visible(true);

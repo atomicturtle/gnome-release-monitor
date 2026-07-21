@@ -852,7 +852,7 @@ export default class ReleaseMonitorExtension extends Extension {
                     const major = project.major || project.owner;
                     const arch = project.arch || 'x86_64';
                     projectIdentifier = `rhel-${major}/kernel`;
-                    Logger.debug(`checkForUpdates: Checking RHEL ${major} kernel via CDN/Security Data (${arch})`);
+                    Logger.debug(`checkForUpdates: Checking RHEL ${major} kernel via CDN (${arch})`);
                     // Refresh cert paths from settings each check
                     this.redhatCdnAPI.setCertificatePaths(
                         this._getRhelCdnSetting('rhel-cdn-cert-path'),
